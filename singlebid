@@ -1,0 +1,1577 @@
+library(dplyr)
+library(data.table)
+library(readxl)
+library(readr)
+library(stringr)
+library(stringi)
+library(openxlsx)
+library(tidyr)
+library(zoo)
+library(ggplot2)
+library(forcats)
+library(vroom)
+library(foreign)
+library(haven)
+library(tidyverse)
+library(purrr)
+library(broom)
+library(modEvA)
+library(stargazer)
+
+
+
+Sys.setenv(TZ = "GMT")
+#Sys.setlocale(locale = "C")
+memory.limit(size = 30000)
+gc()
+
+setwd("C:/Users/s13476/OneDrive - Norges Handelshøyskole/My papers/Paper 3/Data/") 
+raw_ro1 <- fread(file = "RO_may21.csv", 
+                 sep=",",
+                 select = c("tender_id", 
+                                "tender_maincpv",
+                                "tender_finalprice",
+                                "buyer_city_original",
+                                "buyer_postcode",
+                                "tender_publications_firstdcontra",
+                                "bid_digiwhist_price",
+                                "singleb",
+                                "aw_date",
+                                "lot_bidscount",
+                                "buyer_buyertype",
+                                "cri_ro"),
+                 encoding='UTF-8')
+
+#Import the enforcement data
+enforcement_ro <- read_excel("C:/Users/s13476/OneDrive - Norges Handelshøyskole/My papers/Paper 3/Data/Archive/data-ro-csv/enforcement_ro.xlsx")
+
+names(raw_ro1)
+Sys.setlocale(locale = "C")
+raw_ro1$date_day<- as.Date(raw_ro1$aw_date, format= "%d%b%Y")
+
+#Creating data frames 
+enforcement_ro<-data.frame(enforcement_ro)
+main_ro <- data.frame(raw_ro1)
+
+#Making integer of the post codes
+main_ro$buyer_postcode <- as.integer(raw_ro1$buyer_postcode)
+
+#Filter out entries that don't have either city name of post code
+main_ro <- main_ro %>% filter(!is.na(buyer_city_original) | !is.na(buyer_postcode))
+
+#Remove missing in award date procurement
+main_ro <- main_ro %>% filter(!is.na(date))
+
+#Filter out contracts that are too small. The threshold is set at 130 000 RON which equal 26 000 EUR 
+main_ro <- main_ro %>% filter(tender_finalprice > 26000)
+
+#Make all variable names in the enforcement data lower case
+names(enforcement_ro) <- tolower(names(enforcement_ro))
+
+#Fix formatting on municipality names
+main_ro$buyer_city_original <- stri_trans_general(main_ro$buyer_city_original,id = "latin-ascii")
+
+#Delete rows that correspond to the same case, so that one corruption case only occur once.
+enforcement_ro <- distinct(enforcement_ro,nr_of_penal_decision, .keep_all=TRUE)
+enforcement_ro_edited<-enforcement_ro
+#keeps <- c("nr_of_penal_decision","municipality", "zip_code", "date_of_definitive_sentencing", "date_of_indictment")
+keeps <- c("municipality", "date_of_indictment")
+enforcement_ro_edited<-enforcement_ro_edited[keeps]
+
+#Defining dates.
+enforcement_ro$date_of_definitive_sentencing <- as.POSIXct(enforcement_ro$date_of_definitive_sentencing, format='%Y/%m/%d') 
+enforcement_ro$date_of_indictment <- as.POSIXct(enforcement_ro$date_of_indictment, format='%Y/%m/%d')  
+main_ro$tender_publications_firstdcontra <-as.POSIXct(main_ro$tender_publications_firstdcontra, format='%Y/%m/%d')
+
+#filter out corruption cases that happened before the 2009 (before we have procurement data)
+procurment_start <- as.POSIXct("2009-01-01")
+procurment_end <- as.POSIXct("2019-12-31")
+enforcement_ro_edited <- enforcement_ro_edited %>% filter(date_of_indictment>=procurment_start)
+
+#filer cases before 2009 and after 2019 (we do not want entries influenced by corona)
+main_ro <- main_ro %>% filter(tender_publications_firstdcontra < procurment_end)
+
+#Collapse the enforcement data, so that each municipality only occur once (one municipality per row) and cases appear in
+#one column each.
+enforcement_ro_collapsed <- enforcement_ro_edited %>% 
+  group_by_at(vars(municipality)) %>%
+  summarize_all(paste, collapse=",") %>%
+  separate(col= "date_of_indictment", into= c("case1","case2","case3","case4","case5","case6"), sep = ",")
+
+#Overview of all the cities that the data set contains. 
+procuring_cities <- distinct(main_ro,buyer_city_original, .keep_all=TRUE)
+
+##Removing Missing 
+main_ro<- main_ro %>% filter(!is.na(singleb))
+
+##Declaring a new Single bid integrity variable (NOTE: In the lates data set this is already done, using the variable singleb)
+#main_ro$singlebid<- ifelse(main_ro$tender_indicator_integrity_single_bid == 0, 1, 0)
+
+#Dummy for treated municipalities 
+treated_cities <- enforcement_ro_collapsed$municipality
+
+#for(i in 1:nrow(main_ro)){
+#  for(j in 1:nrow(enforcement_ro_collapsed)){ 
+#    if(main_ro$buyer_city[i] %in% treated_cities){ 
+#            main_ro$treated_dummy[i] <- "1" 
+#    } else {
+#            main_ro$treated_dummy[i] <- "0" 
+#            }
+#  }
+#  print(i)
+#}
+
+##Extracting months and years for the procurement contracts
+main_ro$contractyear<- ifelse(is.na(main_ro$tender_publications_firstdcontra), substring(main_ro$tender_publications_firstdcontra,1,4),substring(main_ro$tender_publications_firstdcontra,1,4)) #Contract year
+main_ro$contractmonth <- ifelse(is.na(main_ro$tender_publications_firstdcontra), substring(main_ro$tender_publications_firstdcontra,6,7),substring(main_ro$tender_publications_firstdcontra,6,7)) #Contract month
+
+#Generating month and year as date
+main_ro$date <- as.yearmon(paste(main_ro$contractmonth, main_ro$contractyear), "%m %Y")
+
+#Fixing cities with multiple names
+main_ro$buyer_city_original <- as.character(main_ro$buyer_city_original)
+main_ro$buyer_city_original[main_ro$buyer_city_original == "Iasi (Iasi)"] <- "Iasi"
+main_ro$buyer_city_original[main_ro$buyer_city_original == "DROBETA-TURNU SEVERIN"] <- "Drobeta-Turnu Severin"
+
+#Counting the amount of cases for each city to extract which cities are relevant to study
+count <- as.data.frame(table(main_ro$buyer_city_original))
+count <- count %>% filter(count$Freq>300)
+
+
+## IN THE NEXT SECTION I ASSESS 10 BIGGEST CITIES IN ROMANIA THAT HAVE HAD A CORRUPTION CASE, AND THAT HAVE MORE THAN 200 PROC CONTRACTS 
+
+-----------------------------------------------------------------
+ # City nr 1: Study of Alexandria and the corruption case in 2016
+-----------------------------------------------------------------
+  
+case1_date <- as.POSIXct(paste(enforcement_ro_collapsed[2,2]))
+case1_city_name <- as.character(paste(enforcement_ro_collapsed[2,1]))
+
+# Creating a subset with contracts only in the studied city 
+case1_procur <- main_ro %>% filter(buyer_city_original == case1_city_name)
+
+##Number single bid integrity variable
+ncontracts_case1 <- case1_procur %>% 
+  group_by(date, singleb)%>% 
+  mutate(numberofcontracts = n()) %>% 
+  select(date, numberofcontracts, buyer_buyertype, singleb, tender_maincpv, contractmonth, contractyear, date_day, cri_ro, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+ncontracts_case1<-ncontracts_case1[order(ncontracts_case1$date),]
+ncontracts_case1
+
+#Creating a plot with the number of single bid contracts per month on th y-axis, and time on the x-axis. 
+ggplot(data = ncontracts_case1,
+       mapping = aes(x = date,
+                     y = numberofcontracts))+
+  geom_point()+
+  scale_y_continuous(limits = quantile(ncontracts_case1$numberofcontracts, c(0.1, 0.98)))+
+  geom_vline(xintercept = as.numeric(as.yearmon(case1_date,"%m %Y")), linetype = 2, colour = "red")+
+  theme(axis.text.x=element_text(angle=90,hjust=1)) + labs(title="Monthly Number of single bid contracts", x="Date", y = "Monthly number of single bid contracts" , subtitle="Red line is the date of indictment of the corruption case")
+
+# T-test which include all the data
+# Creating the share of single bid contracts 
+ncontracts_case1 <- ncontracts_case1 %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, buyer_buyertype, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for before and after corruption case
+ncontracts_before_case1 <- ncontracts_case1[c(1:175),]
+ncontracts_after_case1 <- ncontracts_case1[c(176:345),]
+
+ncontracts_before_case1_s1 <- ncontracts_before_case1 %>% filter(singleb == 1)
+ncontracts_after_case1_s1 <- ncontracts_after_case1 %>% filter(singleb == 1)
+mean(ncontracts_before_case1_s1$share)
+mean(ncontracts_after_case1_s1$share)
+
+t1<-t.test(ncontracts_before_case1_s1$share, ncontracts_after_case1_s1$share, paired = FALSE, conf.level = 0.95)
+t1 
+# T-test 1 year before and after the corruption case
+
+ncontracts_case1_1year <- ncontracts_case1[order(ncontracts_case1$date),]
+
+ncontracts_case1_1year <- ncontracts_case1_1year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 1 year before and after corruption case
+ncontracts_before_case1_1year <- ncontracts_case1_1year[c(144:175),]
+ncontracts_after_case1_1year <- ncontracts_case1_1year[c(176:186),]
+
+ncontracts_before_case1_1year_s1 <- ncontracts_before_case1_1year %>% filter(singleb == 1)
+ncontracts_after_case1_1year_s1 <- ncontracts_after_case1_1year %>% filter(singleb == 1)
+mean(ncontracts_before_case1_1year_s1$share)
+mean(ncontracts_after_case1_1year_s1$share)
+
+t1_1year<-t.test(ncontracts_before_case1_1year_s1$share, ncontracts_after_case1_1year_s1$share, paired = FALSE, conf.level = 0.95)
+t1_1year
+# T-test 2 year before and after the corruption case
+
+ncontracts_case1_2year <- ncontracts_case1[order(ncontracts_case1$date),]
+
+ncontracts_case1_2year <- ncontracts_case1_2year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, day_date, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 2 year before and after corruption case
+ncontracts_before_case1_2year <- ncontracts_case1_2year[c(123:175),]
+ncontracts_after_case1_2year <- ncontracts_case1_2year[c(176:222),]
+
+ncontracts_before_case1_2year_s1 <- ncontracts_before_case1_2year %>% filter(singleb == 1)
+ncontracts_after_case1_2year_s1 <- ncontracts_after_case1_2year %>% filter(singleb == 1)
+mean(ncontracts_before_case1_2year_s1$share)
+mean(ncontracts_after_case1_2year_s1$share)
+
+t1_2year<-t.test(ncontracts_before_case1_2year_s1$share, ncontracts_after_case1_2year_s1$share, paired = FALSE, conf.level = 0.95)
+t1_2year
+# T-test 3 year before and after the corruption case
+
+ncontracts_case1_3year <- ncontracts_case1[order(ncontracts_case1$date),]
+
+ncontracts_case1_3year <- ncontracts_case1_3year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, day_date, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 3 year before and after corruption case
+ncontracts_before_case1_3year <- ncontracts_case1_3year[c(100:175),]
+ncontracts_after_case1_3year <- ncontracts_case1_3year[c(176:295),]
+
+ncontracts_before_case1_3year_s1 <- ncontracts_before_case1_3year %>% filter(singleb == 1)
+ncontracts_after_case1_3year_s1 <- ncontracts_after_case1_3year %>% filter(singleb == 1)
+mean(ncontracts_before_case1_3year_s1$share)
+mean(ncontracts_after_case1_3year_s1$share)
+
+t1_3year<-t.test(ncontracts_before_case1_3year_s1$share, ncontracts_after_case1_3year_s1$share, paired = FALSE, conf.level = 0.95)
+t1_3year
+
+-----------------------------------------------------------------
+# City nr 2: Study of Arad and the corruption case in 2016
+-----------------------------------------------------------------
+  
+case2_date <- as.POSIXct(paste(enforcement_ro_collapsed[5,2]))
+case2_city_name <- as.character(paste(enforcement_ro_collapsed[5,1]))
+
+# Creating a subset with contracts only in the studied city 
+case2_procur <- main_ro %>% filter(buyer_city_original == case2_city_name)
+
+##Number single bid integrity variable
+ncontracts_case2 <- case2_procur %>% 
+  group_by(date, singleb)%>% 
+  mutate(numberofcontracts = n()) %>% 
+  select(date, numberofcontracts, singleb, buyer_buyertype, tender_maincpv, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+ncontracts_case2<-ncontracts_case2[order(ncontracts_case2$date),]
+ncontracts_case2
+
+ggplot(data = ncontracts_case2,
+       mapping = aes(x = date,
+                     y = numberofcontracts))+
+  geom_point()+
+  scale_y_continuous(limits = c(0, 100))+
+  geom_vline(xintercept = as.numeric(as.yearmon(case2_date,"%m %Y")), linetype = 2, colour = "red")+
+  theme(axis.text.x=element_text(angle=90,hjust=1)) + labs(title="Monthly Number of single bid contracts", x="Date", y = "Monthly number of single bid contracts" , subtitle="Red line is the date of indictment of the corruption case")
+
+# T-test which include all the data
+# Creating the share of single bid contracts 
+ncontracts_case2 <- ncontracts_case2 %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, buyer_buyertype, tender_maincpv, date_day, cri_ro, share, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for before and after corruption case
+ncontracts_before_case2 <- ncontracts_case2[c(1:288),]
+ncontracts_after_case2 <- ncontracts_case2[c(289:769),]
+
+ncontracts_before_case2_s1 <- ncontracts_before_case2 %>% filter(singleb == 1)
+ncontracts_after_case2_s1 <- ncontracts_after_case2 %>% filter(singleb == 1)
+mean(ncontracts_before_case2_s1$share)
+mean(ncontracts_after_case2_s1$share)
+
+t2<-t.test(ncontracts_before_case2_s1$share, ncontracts_after_case2_s1$share, paired = FALSE, conf.level = 0.95)
+t2
+# T-test 1 year before and after the corruption case
+
+ncontracts_case2_1year <- ncontracts_case2[order(ncontracts_case2$date),]
+
+ncontracts_case2_1year <- ncontracts_case2_1year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, date_day, cri_ro, share,contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 1 year before and after corruption case
+ncontracts_before_case2_1year <- ncontracts_case2_1year[c(252:288),]
+ncontracts_after_case2_1year <- ncontracts_case2_1year[c(289:336),]
+
+ncontracts_before_case2_1year_s1 <- ncontracts_before_case2_1year %>% filter(singleb == 1)
+ncontracts_after_case2_1year_s1 <- ncontracts_after_case2_1year %>% filter(singleb == 1)
+mean(ncontracts_before_case2_1year_s1$share)
+mean(ncontracts_after_case2_1year_s1$share)
+
+t2_1year<-t.test(ncontracts_before_case2_1year_s1$share, ncontracts_after_case2_1year_s1$share, paired = FALSE, conf.level = 0.95)
+t2_1year
+# T-test 2 year before and after the corruption case
+
+ncontracts_case2_2year <- ncontracts_case2[order(ncontracts_case2$date),]
+
+ncontracts_case2_2year <- ncontracts_case2_2year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, date_day, cri_ro, share, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 2 year before and after corruption case
+ncontracts_before_case2_2year <- ncontracts_case2_2year[c(209:288),]
+ncontracts_after_case2_2year <- ncontracts_case2_2year[c(289:427),]
+
+ncontracts_before_case2_2year_s1 <- ncontracts_before_case2_2year %>% filter(singleb == 1)
+ncontracts_after_case2_2year_s1 <- ncontracts_after_case2_2year %>% filter(singleb == 1)
+mean(ncontracts_before_case2_2year_s1$share)
+mean(ncontracts_after_case2_2year_s1$share)
+
+t2_2year<-t.test(ncontracts_before_case2_2year_s1$share, ncontracts_after_case2_2year_s1$share, paired = FALSE, conf.level = 0.95)
+t2_2year
+# T-test 3 year before and after the corruption case
+
+ncontracts_case2_3year <- ncontracts_case2[order(ncontracts_case2$date),]
+
+ncontracts_case2_3year <- ncontracts_case2_3year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, date_day, cri_ro, share, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 3 year before and after corruption case
+ncontracts_before_case2_3year <- ncontracts_case2_3year[c(179:288),]
+ncontracts_after_case2_3year <- ncontracts_case2_3year[c(289:660),]
+
+ncontracts_before_case2_3year_s1 <- ncontracts_before_case2_3year %>% filter(singleb == 1)
+ncontracts_after_case2_3year_s1 <- ncontracts_after_case2_3year %>% filter(singleb == 1)
+mean(ncontracts_before_case2_3year_s1$share)
+mean(ncontracts_after_case2_3year_s1$share)
+
+t2_3year<-t.test(ncontracts_before_case2_3year_s1$share, ncontracts_after_case2_3year_s1$share, paired = FALSE, conf.level = 0.95)
+t2_3year
+
+
+-----------------------------------------------------------------
+# City nr 3: Study of Bacau and the two corruption case in 2014 (so close in time that I use only the first case)
+-----------------------------------------------------------------
+  
+case3_date <- as.POSIXct(paste(enforcement_ro_collapsed[7,2]))
+case3_city_name <- as.character(paste(enforcement_ro_collapsed[7,1]))
+
+# Creating a subset with contracts only in the studied city 
+case3_procur <- main_ro %>% filter(buyer_city_original == case3_city_name)
+
+##Number single bid integrity variable
+ncontracts_case3 <- case3_procur %>% 
+  group_by(date, singleb)%>% 
+  mutate(numberofcontracts = n()) %>% 
+  select(singleb, date, numberofcontracts, buyer_buyertype, tender_maincpv, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+ncontracts_case3<-ncontracts_case3[order(ncontracts_case3$date),]
+ncontracts_case3
+
+ggplot(data = ncontracts_case3,
+       mapping = aes(x = date,
+                     y = numberofcontracts))+
+  geom_point()+
+  scale_y_continuous(limits = quantile(ncontracts_case3$numberofcontracts, c(0.1, 0.99)))+
+  geom_vline(xintercept = as.numeric(as.yearmon(case3_date,"%m %Y")), linetype = 2, colour = "red")+
+  theme(axis.text.x=element_text(angle=90,hjust=1)) + labs(title="Monthly Number of single bid contracts", x="Date", y = "Monthly number of single bid contracts" , subtitle="Red line is the date of indictment of the corruption case")
+
+# T-test which include all the data
+# Creating the share of single bid contracts 
+ncontracts_case3 <- ncontracts_case3 %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, buyer_buyertype, tender_maincpv, date_day, cri_ro, share, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for before and after corruption case
+ncontracts_before_case3 <- ncontracts_case3[c(1:308),]
+ncontracts_after_case3 <- ncontracts_case3[c(309:900),]
+
+ncontracts_before_case3_s1 <- ncontracts_before_case3 %>% filter(singleb == 1)
+ncontracts_after_case3_s1 <- ncontracts_after_case3 %>% filter(singleb == 1)
+mean(ncontracts_before_case3_s1$share)
+mean(ncontracts_after_case3_s1$share)
+
+t3<-t.test(ncontracts_before_case3_s1$share, ncontracts_after_case3_s1$share, paired = FALSE, conf.level = 0.95)
+t3
+# T-test 1 year before and after the corruption case
+
+ncontracts_case3_1year <- ncontracts_case3[order(ncontracts_case3$date),]
+
+ncontracts_case3_1year <- ncontracts_case3_1year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, date_day, cri_ro, share, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 1 year before and after corruption case
+ncontracts_before_case3_1year <- ncontracts_case3_1year[c(272:308),]
+ncontracts_after_case3_1year <- ncontracts_case3_1year[c(309:332),]
+
+ncontracts_before_case3_1year_s1 <- ncontracts_before_case3_1year %>% filter(singleb == 1)
+ncontracts_after_case3_1year_s1 <- ncontracts_after_case3_1year %>% filter(singleb == 1)
+mean(ncontracts_before_case3_1year_s1$share)
+mean(ncontracts_after_case3_1year_s1$share)
+
+t3_1year<-t.test(ncontracts_before_case3_1year_s1$share, ncontracts_after_case3_1year_s1$share, paired = FALSE, conf.level = 0.95)
+t3_1year
+# T-test 2 year before and after the corruption case
+
+ncontracts_case3_2year <- ncontracts_case3[order(ncontracts_case3$date),]
+
+ncontracts_case3_2year <- ncontracts_case3_2year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, date_day, cri_ro, share, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 2 year before and after corruption case
+ncontracts_before_case3_2year <- ncontracts_case3_2year[c(200:308),]
+ncontracts_after_case3_2year <- ncontracts_case3_2year[c(309:392),]
+
+ncontracts_before_case3_2year_s1 <- ncontracts_before_case3_2year %>% filter(singleb == 1)
+ncontracts_after_case3_2year_s1 <- ncontracts_after_case3_2year %>% filter(singleb == 1)
+mean(ncontracts_before_case3_2year_s1$share)
+mean(ncontracts_after_case3_2year_s1$share)
+
+t3_2year<-t.test(ncontracts_before_case3_2year_s1$share, ncontracts_after_case3_2year_s1$share, paired = FALSE, conf.level = 0.95)
+t3_2year
+# T-test 3 year before and after the corruption case
+
+ncontracts_case3_3year <- ncontracts_case3[order(ncontracts_case3$date),]
+
+ncontracts_case3_3year <- ncontracts_case3_3year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, date_day, cri_ro, share, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 3 year before and after corruption case
+ncontracts_before_case3_3year <- ncontracts_case3_3year[c(161:308),]
+ncontracts_after_case3_3year <- ncontracts_case3_3year[c(309:418),]
+
+ncontracts_before_case3_3year_s1 <- ncontracts_before_case3_3year %>% filter(singleb == 1)
+ncontracts_after_case3_3year_s1 <- ncontracts_after_case3_3year %>% filter(singleb == 1)
+mean(ncontracts_before_case3_3year_s1$share)
+mean(ncontracts_after_case3_3year_s1$share)
+
+t3_3year<-t.test(ncontracts_before_case3_3year_s1$share, ncontracts_after_case3_3year_s1$share, paired = FALSE, conf.level = 0.95)
+t3_3year
+
+-----------------------------------------------------------------
+  # City nr 4: Study of Buzau and the corruption case in 2013 
+-----------------------------------------------------------------
+  
+case4_date <- as.POSIXct(paste(enforcement_ro_collapsed[24,2]))
+case4_city_name <- as.character(paste(enforcement_ro_collapsed[24,1]))
+
+# Creating a subset with contracts only in the studied city 
+case4_procur <- main_ro %>% filter(buyer_city_original == case4_city_name)
+
+##Number single bid integrity variable
+ncontracts_case4 <- case4_procur %>% 
+  group_by(date, singleb)%>% 
+  mutate(numberofcontracts = n()) %>% 
+  select(singleb, date, numberofcontracts, buyer_buyertype, tender_maincpv, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+ncontracts_case4<-ncontracts_case4[order(ncontracts_case4$date),]
+ncontracts_case4
+
+ggplot(data = ncontracts_case4,
+       mapping = aes(x = date,
+                     y = numberofcontracts))+
+  geom_point()+
+  scale_y_continuous(limits = quantile(ncontracts_case4$numberofcontracts, c(0.1, 0.99)))+
+  geom_vline(xintercept = as.numeric(as.yearmon(case4_date,"%m %Y")), linetype = 2, colour = "red")+
+  theme(axis.text.x=element_text(angle=90,hjust=1)) + labs(title="Monthly Number of single bid contracts", x="Date", y = "Monthly number of single bid contracts" , subtitle="Red line is the date of indictment of the corruption case")
+
+# T-test which include all the data
+# Creating the share of single bid contracts 
+ncontracts_case4 <- ncontracts_case4 %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, buyer_buyertype, tender_maincpv, date_day, cri_ro, share, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for before and after corruption case
+ncontracts_before_case4 <- ncontracts_case4[c(1:139),]
+ncontracts_after_case4 <- ncontracts_case4[c(140:450),]
+
+ncontracts_before_case4_s1 <- ncontracts_before_case4 %>% filter(singleb == 1)
+ncontracts_after_case4_s1 <- ncontracts_after_case4 %>% filter(singleb == 1)
+mean(ncontracts_before_case4_s1$share)
+mean(ncontracts_after_case4_s1$share)
+
+t4<-t.test(ncontracts_before_case4_s1$share, ncontracts_after_case4_s1$share, paired = FALSE, conf.level = 0.95)
+t4
+# T-test 1 year before and after the corruption case
+
+ncontracts_case4_1year <- ncontracts_case4[order(ncontracts_case4$date),]
+
+ncontracts_case4_1year <- ncontracts_case4_1year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, date_day, cri_ro, share, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 1 year before and after corruption case
+ncontracts_before_case4_1year <- ncontracts_case4_1year[c(119:139),]
+ncontracts_after_case4_1year <- ncontracts_case4_1year[c(140:161),]
+
+ncontracts_before_case4_1year_s1 <- ncontracts_before_case4_1year %>% filter(singleb == 1)
+ncontracts_after_case4_1year_s1 <- ncontracts_after_case4_1year %>% filter(singleb == 1)
+mean(ncontracts_before_case4_1year_s1$share)
+mean(ncontracts_after_case4_1year_s1$share)
+
+t4_1year<-t.test(ncontracts_before_case4_1year_s1$share, ncontracts_after_case4_1year_s1$share, paired = FALSE, conf.level = 0.95)
+t4_1year
+# T-test 2 year before and after the corruption case
+
+ncontracts_case4_2year <- ncontracts_case4[order(ncontracts_case4$date),]
+
+ncontracts_case4_2year <- ncontracts_case4_2year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, date_day, cri_ro, share, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 2 year before and after corruption case
+ncontracts_before_case4_2year <- ncontracts_case4_2year[c(98:139),]
+ncontracts_after_case4_2year <- ncontracts_case4_2year[c(140:190),]
+
+ncontracts_before_case4_2year_s1 <- ncontracts_before_case4_2year %>% filter(singleb == 1)
+ncontracts_after_case4_2year_s1 <- ncontracts_after_case4_2year %>% filter(singleb == 1)
+mean(ncontracts_before_case4_2year_s1$share)
+mean(ncontracts_after_case4_2year_s1$share)
+
+t4_2year<-t.test(ncontracts_before_case4_2year$share, ncontracts_after_case4_2year$share, paired = FALSE, conf.level = 0.95)
+t4_2year
+# T-test 3 year before and after the corruption case
+
+ncontracts_case4_3year <- ncontracts_case4[order(ncontracts_case4$date),]
+
+ncontracts_case4_3year <- ncontracts_case4_3year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, date_day, cri_ro, share, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 3 year before and after corruption case
+ncontracts_before_case4_3year <- ncontracts_case4_3year[c(67:139),]
+ncontracts_after_case4_3year <- ncontracts_case4_3year[c(140:225),]
+
+ncontracts_before_case4_3year_s1 <- ncontracts_before_case4_3year %>% filter(singleb == 1)
+ncontracts_after_case4_3year_s1 <- ncontracts_after_case4_3year %>% filter(singleb == 1)
+mean(ncontracts_before_case4_3year_s1$share)
+mean(ncontracts_after_case4_3year_s1$share)
+
+t4_3year<-t.test(ncontracts_before_case4_3year_s1$share, ncontracts_after_case4_3year_s1$share, paired = FALSE, conf.level = 0.95)
+t4_3year
+
+-----------------------------------------------------------------
+# City nr 5: Study of Timisoara and the corruption case in 2015 
+-----------------------------------------------------------------
+
+case5_date <- as.POSIXct(paste(enforcement_ro_collapsed[114,3]))
+case5_city_name <- as.character(paste(enforcement_ro_collapsed[114,1]))
+
+# Creating a subset with contracts only in the studied city 
+case5_procur <- main_ro %>% filter(buyer_city_original == case5_city_name)
+
+##Number single bid integrity variable
+ncontracts_case5 <- case5_procur %>% 
+  group_by(date, singleb)%>% 
+  mutate(numberofcontracts = n()) %>% 
+  select(date, numberofcontracts, singleb, buyer_buyertype, tender_maincpv, contractmonth, contractyear, date_day, cri_ro, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+ncontracts_case5<-ncontracts_case5[order(ncontracts_case5$date),]
+ncontracts_case5
+
+#Creating a plot with the number of single bid contracts per month on th y-axis, and time on the x-axis. 
+ggplot(data = ncontracts_case5,
+       mapping = aes(x = date,
+                     y = numberofcontracts))+
+  geom_point()+
+  scale_y_continuous(limits = quantile(ncontracts_case1$numberofcontracts, c(0.1, 0.98)))+
+  geom_vline(xintercept = as.numeric(as.yearmon(case5_date,"%m %Y")), linetype = 2, colour = "red")+
+  theme(axis.text.x=element_text(angle=90,hjust=1)) + labs(title="Monthly Number of single bid contracts", x="Date", y = "Monthly number of single bid contracts" , subtitle="Red line is the date of indictment of the corruption case")
+
+# T-test which include all the data
+# Creating the share of single bid contracts 
+ncontracts_case5 <- ncontracts_case5 %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, buyer_buyertype, tender_maincpv, date_day, cri_ro, share, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for before and after corruption case
+ncontracts_before_case5 <- ncontracts_case5[c(1:729),]
+ncontracts_after_case5 <- ncontracts_case5[c(730:2234),]
+
+ncontracts_before_case5_s1 <- ncontracts_before_case5 %>% filter(singleb == 1)
+ncontracts_after_case5_s1 <- ncontracts_after_case5 %>% filter(singleb == 1)
+mean(ncontracts_before_case5_s1$share)
+mean(ncontracts_after_case5_s1$share)
+
+t5<-t.test(ncontracts_before_case5_s1$share, ncontracts_after_case5_s1$share, paired = FALSE, conf.level = 0.95)
+t5 
+# T-test 1 year before and after the corruption case
+
+ncontracts_case5_1year <- ncontracts_case5[order(ncontracts_case5$date),]
+
+ncontracts_case5_1year <- ncontracts_case5_1year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, date_day, share, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 1 year before and after corruption case
+ncontracts_before_case5_1year <- ncontracts_case5_1year[c(612:729),]
+ncontracts_after_case5_1year <- ncontracts_case5_1year[c(730:836),]
+
+ncontracts_before_case5_1year_s1 <- ncontracts_before_case5_1year %>% filter(singleb == 1)
+ncontracts_after_case5_1year_s1 <- ncontracts_after_case5_1year %>% filter(singleb == 1)
+mean(ncontracts_before_case5_1year_s1$share)
+mean(ncontracts_after_case5_1year_s1$share)
+
+t5_1year<-t.test(ncontracts_before_case5_1year_s1$share, ncontracts_after_case5_1year_s1$share, paired = FALSE, conf.level = 0.95)
+t5_1year
+# T-test 2 year before and after the corruption case
+
+ncontracts_case5_2year <- ncontracts_case5[order(ncontracts_case5$date),]
+
+ncontracts_case5_2year <- ncontracts_case5_2year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 2 year before and after corruption case
+ncontracts_before_case5_2year <- ncontracts_case5_2year[c(511:729),]
+ncontracts_after_case5_2year <- ncontracts_case5_2year[c(730:946),]
+
+ncontracts_before_case5_2year_s1 <- ncontracts_before_case5_2year %>% filter(singleb == 1)
+ncontracts_after_case5_2year_s1 <- ncontracts_after_case5_2year %>% filter(singleb == 1)
+mean(ncontracts_before_case5_2year_s1$share)
+mean(ncontracts_after_case5_2year_s1$share)
+
+t5_2year<-t.test(ncontracts_before_case5_2year_s1$share, ncontracts_after_case5_2year_s1$share, paired = FALSE, conf.level = 0.95)
+t5_2year
+# T-test 3 year before and after the corruption case
+
+ncontracts_case5_3year <- ncontracts_case5[order(ncontracts_case5$date),]
+
+ncontracts_case5_3year <- ncontracts_case5_3year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 3 year before and after corruption case
+ncontracts_before_case5_3year <- ncontracts_case5_3year[c(408:729),]
+ncontracts_after_case5_3year <- ncontracts_case5_3year[c(730:1251),]
+
+ncontracts_before_case5_3year_s1 <- ncontracts_before_case5_3year %>% filter(singleb == 1)
+ncontracts_after_case5_3year_s1 <- ncontracts_after_case5_3year %>% filter(singleb == 1)
+mean(ncontracts_before_case5_3year_s1$share)
+mean(ncontracts_after_case5_3year_s1$share)
+
+t5_3year<-t.test(ncontracts_before_case5_3year_s1$share, ncontracts_after_case5_3year_s1$share, paired = FALSE, conf.level = 0.95)
+t5_3year
+
+-----------------------------------------------------------------
+  # City nr 6: Study of Iasi and the corruption case in 2014 
+-----------------------------------------------------------------
+  
+  
+case6_date <- as.POSIXct(paste(enforcement_ro_collapsed[63,3]))
+case6_city_name <- as.character(paste(enforcement_ro_collapsed[63,1]))
+
+# Creating a subset with contracts only in the studied city 
+case6_procur <- main_ro %>% filter(buyer_city_original == case6_city_name)
+
+##Number single bid integrity variable
+ncontracts_case6 <- case6_procur %>% 
+  group_by(date, singleb)%>% 
+  mutate(numberofcontracts = n()) %>% 
+  select(date, numberofcontracts, singleb, buyer_buyertype, tender_maincpv, contractmonth, contractyear, date, date_day, cri_ro, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+ncontracts_case6<-ncontracts_case6[order(ncontracts_case6$date),]
+ncontracts_case6
+
+#Creating a plot with the number of single bid contracts per month on th y-axis, and time on the x-axis. 
+ggplot(data = ncontracts_case6,
+       mapping = aes(x = date,
+                     y = numberofcontracts))+
+  geom_point()+
+  scale_y_continuous(limits = quantile(ncontracts_case1$numberofcontracts, c(0.1, 0.98)))+
+  geom_vline(xintercept = as.numeric(as.yearmon(case5_date,"%m %Y")), linetype = 2, colour = "red")+
+  theme(axis.text.x=element_text(angle=90,hjust=1)) + labs(title="Monthly Number of single bid contracts", x="Date", y = "Monthly number of single bid contracts" , subtitle="Red line is the date of indictment of the corruption case")
+
+# T-test which include all the data
+# Creating the share of single bid contracts 
+ncontracts_case6 <- ncontracts_case6 %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, buyer_buyertype, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for before and after corruption case
+ncontracts_before_case6 <- ncontracts_case6[c(1:2209),]
+ncontracts_after_case6 <- ncontracts_case6[c(2210:8607),]
+
+ncontracts_before_case6_s1 <- ncontracts_before_case6 %>% filter(singleb == 1)
+ncontracts_after_case6_s1 <- ncontracts_after_case6 %>% filter(singleb == 1)
+mean(ncontracts_before_case6_s1$share)
+mean(ncontracts_after_case6_s1$share)
+
+t6<-t.test(ncontracts_before_case6_s1$share, ncontracts_after_case6_s1$share, paired = FALSE, conf.level = 0.95)
+t6 
+# T-test 1 year before and after the corruption case
+
+ncontracts_case6_1year <- ncontracts_case6[order(ncontracts_case6$date),]
+
+ncontracts_case6_1year <- ncontracts_case6_1year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, date_day, share, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 1 year before and after corruption case
+ncontracts_before_case6_1year <- ncontracts_case6_1year[c(1614:2209),]
+ncontracts_after_case6_1year <- ncontracts_case6_1year[c(2210:3135),]
+
+ncontracts_before_case6_1year_s1 <- ncontracts_before_case6_1year %>% filter(singleb == 1)
+ncontracts_after_case6_1year_s1 <- ncontracts_after_case6_1year %>% filter(singleb == 1)
+mean(ncontracts_before_case6_1year_s1$share)
+mean(ncontracts_after_case6_1year_s1$share)
+
+t6_1year<-t.test(ncontracts_before_case6_1year_s1$share, ncontracts_after_case6_1year_s1$share, paired = FALSE, conf.level = 0.95)
+t6_1year
+# T-test 2 year before and after the corruption case
+
+ncontracts_case6_2year <- ncontracts_case6[order(ncontracts_case6$date),]
+
+ncontracts_case6_2year <- ncontracts_case6_2year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 2 year before and after corruption case
+ncontracts_before_case6_2year <- ncontracts_case6_2year[c(1190:2209),]
+ncontracts_after_case6_2year <- ncontracts_case6_2year[c(2210:3898),]
+
+ncontracts_before_case6_2year_s1 <- ncontracts_before_case6_2year %>% filter(singleb == 1)
+ncontracts_after_case6_2year_s1 <- ncontracts_after_case6_2year %>% filter(singleb == 1)
+mean(ncontracts_before_case6_2year_s1$share)
+mean(ncontracts_after_case6_2year_s1$share)
+
+t6_2year<-t.test(ncontracts_before_case6_2year_s1$share, ncontracts_after_case6_2year_s1$share, paired = FALSE, conf.level = 0.95)
+t6_2year
+# T-test 3 year before and after the corruption case
+
+ncontracts_case6_3year <- ncontracts_case6[order(ncontracts_case6$date),]
+
+ncontracts_case6_3year <- ncontracts_case6_3year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 3 year before and after corruption case
+ncontracts_before_case6_3year <- ncontracts_case6_3year[c(616:2209),]
+ncontracts_after_case6_3year <- ncontracts_case6_3year[c(2210:4836),]
+
+ncontracts_before_case6_3year_s1 <- ncontracts_before_case6_3year %>% filter(singleb == 1)
+ncontracts_after_case6_3year_s1 <- ncontracts_after_case6_3year %>% filter(singleb == 1)
+mean(ncontracts_before_case6_3year_s1$share)
+mean(ncontracts_after_case6_3year_s1$share)
+
+t6_3year<-t.test(ncontracts_before_case6_3year_s1$share, ncontracts_after_case6_3year_s1$share, paired = FALSE, conf.level = 0.95)
+t6_3year
+
+-----------------------------------------------------------------
+  # City nr 7: Study of Craiova and the corruption case in 2015 
+-----------------------------------------------------------------
+  
+case7_date <- as.POSIXct(paste(enforcement_ro_collapsed[38,3]))
+case7_city_name <- as.character(paste(enforcement_ro_collapsed[38,1]))
+
+# Creating a subset with contracts only in the studied city 
+case7_procur <- main_ro %>% filter(buyer_city_original == case7_city_name)
+
+##Number single bid integrity variable
+ncontracts_case7 <- case7_procur %>% 
+  group_by(date, singleb)%>% 
+  mutate(numberofcontracts = n()) %>% 
+  select(singleb, date, numberofcontracts, buyer_buyertype, tender_maincpv, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+ncontracts_case7<-ncontracts_case7[order(ncontracts_case7$date),]
+ncontracts_case7
+
+ggplot(data = ncontracts_case7,
+       mapping = aes(x = date,
+                     y = numberofcontracts))+
+  geom_point()+
+  scale_y_continuous(limits = quantile(ncontracts_case7$numberofcontracts, c(0.1, 0.99)))+
+  geom_vline(xintercept = as.numeric(as.yearmon(case7_date,"%m %Y")), linetype = 2, colour = "red")+
+  theme(axis.text.x=element_text(angle=90,hjust=1)) + labs(title="Monthly Number of single bid contracts", x="Date", y = "Monthly number of single bid contracts" , subtitle="Red line is the date of indictment of the corruption case")
+
+# T-test which include all the data
+# Creating the share of single bid contracts 
+ncontracts_case7 <- ncontracts_case7 %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, buyer_buyertype, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for before and after corruption case
+ncontracts_before_case7 <- ncontracts_case7[c(1:811),]
+ncontracts_after_case7 <- ncontracts_case7[c(812:1888),]
+
+ncontracts_before_case7_s1 <- ncontracts_before_case7 %>% filter(singleb == 1)
+ncontracts_after_case7_s1 <- ncontracts_after_case7 %>% filter(singleb == 1)
+mean(ncontracts_before_case7_s1$share)
+mean(ncontracts_after_case7_s1$share)
+
+t7<-t.test(ncontracts_before_case7_s1$share, ncontracts_after_case7_s1$share, paired = FALSE, conf.level = 0.95)
+t7
+# T-test 1 year before and after the corruption case
+ncontracts_case7_1year <- ncontracts_case7[order(ncontracts_case7$date),]
+
+ncontracts_case7_1year <- ncontracts_case7_1year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, date_day, tender_maincpv, share, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 1 year before and after corruption case
+
+ncontracts_before_case7_1year <- ncontracts_case7_1year[c(686:811),]
+ncontracts_after_case7_1year <- ncontracts_case7_1year[c(812:972),]
+
+ncontracts_before_case7_1year_s1 <- ncontracts_before_case7_1year %>% filter(singleb == 1)
+ncontracts_after_case7_1year_s1 <- ncontracts_after_case7_1year %>% filter(singleb == 1)
+mean(ncontracts_before_case7_1year_s1$share)
+mean(ncontracts_after_case7_1year_s1$share)
+
+t7_1year<-t.test(ncontracts_before_case7_1year_s1$share, ncontracts_after_case7_1year_s1$share, paired = FALSE, conf.level = 0.95)
+t7_1year
+# T-test 2 year before and after the corruption case
+
+ncontracts_case7_2year <- ncontracts_case7[order(ncontracts_case7$date),]
+
+ncontracts_case7_2year <- ncontracts_case7_2year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 2 year before and after corruption case
+ncontracts_before_case7_2year <- ncontracts_case7_2year[c(595:811),]
+ncontracts_after_case7_2year <- ncontracts_case7_2year[c(812:972),]
+
+ncontracts_before_case7_2year_s1 <- ncontracts_before_case7_2year %>% filter(singleb == 1)
+ncontracts_after_case7_2year_s1 <- ncontracts_after_case7_2year %>% filter(singleb == 1)
+mean(ncontracts_before_case7_2year_s1$share)
+mean(ncontracts_after_case7_2year_s1$share)
+
+t7_2year<-t.test(ncontracts_before_case7_2year_s1$share, ncontracts_after_case7_2year_s1$share, paired = FALSE, conf.level = 0.95)
+t7_2year
+# T-test 3 year before and after the corruption case
+
+ncontracts_case7_3year <- ncontracts_case7[order(ncontracts_case7$date),]
+
+ncontracts_case7_3year <- ncontracts_case7_3year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 3 year before and after corruption case
+ncontracts_before_case7_3year <- ncontracts_case7_3year[c(499:811),]
+ncontracts_after_case7_3year <- ncontracts_case7_3year[c(812:1160),]
+
+ncontracts_before_case7_3year_s1 <- ncontracts_before_case7_3year %>% filter(singleb == 1)
+ncontracts_after_case7_3year_s1 <- ncontracts_after_case7_3year %>% filter(singleb == 1)
+mean(ncontracts_before_case7_3year_s1$share)
+mean(ncontracts_after_case7_3year_s1$share)
+
+t7_3year<-t.test(ncontracts_before_case7_3year_s1$share, ncontracts_after_case7_3year_s1$share, paired = FALSE, conf.level = 0.95)
+t7_3year
+
+-----------------------------------------------------------------
+  # City nr 8: Study of Drobeta-Turnu Severin and the corruption case in 2014 
+-----------------------------------------------------------------
+
+case8_date <- as.POSIXct(paste(enforcement_ro_collapsed[44,2]))
+case8_city_name <- as.character(paste(enforcement_ro_collapsed[44,1]))
+
+# Creating a subset with contracts only in the studied city 
+case8_procur <- main_ro %>% filter(buyer_city_original == case8_city_name)
+
+##Number single bid integrity variable
+ncontracts_case8 <- case8_procur %>% 
+  group_by(date, singleb)%>% 
+  mutate(numberofcontracts = n()) %>% 
+  select(singleb, date, numberofcontracts, buyer_buyertype, tender_maincpv, contractmonth, date_day, cri_ro, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+ncontracts_case8<-ncontracts_case8[order(ncontracts_case8$date),]
+ncontracts_case8
+
+ggplot(data = ncontracts_case8,
+       mapping = aes(x = date,
+                     y = numberofcontracts))+
+  geom_point()+
+  scale_y_continuous(limits = quantile(ncontracts_case8$numberofcontracts, c(0.1, 0.99)))+
+  geom_vline(xintercept = as.numeric(as.yearmon(case8_date,"%m %Y")), linetype = 2, colour = "red")+
+  theme(axis.text.x=element_text(angle=90,hjust=1)) + labs(title="Monthly Number of single bid contracts", x="Date", y = "Monthly number of single bid contracts" , subtitle="Red line is the date of indictment of the corruption case")
+
+# T-test which include all the data
+# Creating the share of single bid contracts 
+ncontracts_case8 <- ncontracts_case8 %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for before and after corruption case
+ncontracts_before_case8 <- ncontracts_case8[c(1:263),]
+ncontracts_after_case8 <- ncontracts_case8[c(264:549),]
+
+ncontracts_before_case8_s1 <- ncontracts_before_case8 %>% filter(singleb == 1)
+ncontracts_after_case8_s1 <- ncontracts_after_case8 %>% filter(singleb == 1)
+mean(ncontracts_before_case8_s1$share)
+mean(ncontracts_after_case8_s1$share)
+
+t8<-t.test(ncontracts_before_case8_s1$share, ncontracts_after_case8_s1$share, paired = FALSE, conf.level = 0.95)
+t8
+# T-test 1 year before and after the corruption case
+
+ncontracts_case8_1year <- ncontracts_case8[order(ncontracts_case8$date),]
+
+ncontracts_case8_1year <- ncontracts_case8_1year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, buyer_buyertype, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 1 year before and after corruption case
+
+ncontracts_before_case8_1year <- ncontracts_case8_1year[c(235:263),]
+ncontracts_after_case8_1year <- ncontracts_case8_1year[c(264:281),]
+
+ncontracts_before_case8_1year_s1 <- ncontracts_before_case8_1year %>% filter(singleb == 1)
+ncontracts_after_case8_1year_s1 <- ncontracts_after_case8_1year %>% filter(singleb == 1)
+mean(ncontracts_before_case8_1year_s1$share)
+mean(ncontracts_after_case8_1year_s1$share)
+
+t8_1year<-t.test(ncontracts_before_case8_1year_s1$share, ncontracts_after_case8_1year_s1$share, paired = FALSE, conf.level = 0.95)
+t8_1year
+# T-test 2 year before and after the corruption case
+
+ncontracts_case8_2year <- ncontracts_case8[order(ncontracts_case8$date),]
+
+ncontracts_case8_2year <- ncontracts_case8_2year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 2 year before and after corruption case
+ncontracts_before_case8_2year <- ncontracts_case8_2year[c(187:263),]
+ncontracts_after_case8_2year <- ncontracts_case8_2year[c(264:281),]
+
+ncontracts_before_case8_2year_s1 <- ncontracts_before_case8_2year %>% filter(singleb == 1)
+ncontracts_after_case8_2year_s1 <- ncontracts_after_case8_2year %>% filter(singleb == 1)
+mean(ncontracts_before_case8_2year_s1$share)
+mean(ncontracts_after_case8_2year_s1$share)
+
+t8_2year<-t.test(ncontracts_before_case8_2year_s1$share, ncontracts_after_case8_2year_s1$share, paired = FALSE, conf.level = 0.95)
+t8_2year
+# T-test 3 year before and after the corruption case
+
+ncontracts_case8_3year <- ncontracts_case8[order(ncontracts_case8$date),]
+
+ncontracts_case8_3year <- ncontracts_case8_3year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 3 year before and after corruption case
+ncontracts_before_case8_3year <- ncontracts_case8_3year[c(167:263),]
+ncontracts_after_case8_3year <- ncontracts_case8_3year[c(264:345),]
+
+ncontracts_before_case8_3year_s1 <- ncontracts_before_case8_3year %>% filter(singleb == 1)
+ncontracts_after_case8_3year_s1 <- ncontracts_after_case8_3year %>% filter(singleb == 1)
+mean(ncontracts_before_case8_3year_s1$share)
+mean(ncontracts_after_case8_3year_s1$share)
+
+t8_3year<-t.test(ncontracts_before_case8_3year_s1$share, ncontracts_after_case8_3year_s1$share, paired = FALSE, conf.level = 0.95)
+t8_3year
+
+-----------------------------------------------------------------
+  # City nr 9: Study of Miercurea Ciuc and the corruption case in 2016 
+-----------------------------------------------------------------
+  
+case9_date <- as.POSIXct(paste(enforcement_ro_collapsed[75,2]))
+case9_city_name <- as.character(paste(enforcement_ro_collapsed[75,1]))
+
+# Creating a subset with contracts only in the studied city 
+case9_procur <- main_ro %>% filter(buyer_city_original == case9_city_name)
+
+##Number single bid integrity variable
+ncontracts_case9 <- case9_procur %>% 
+  group_by(date, singleb)%>% 
+  mutate(numberofcontracts = n()) %>% 
+  select(singleb, date, numberofcontracts, buyer_buyertype, tender_maincpv, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+ncontracts_case9<-ncontracts_case9[order(ncontracts_case9$date),]
+ncontracts_case9
+
+ggplot(data = ncontracts_case9,
+       mapping = aes(x = date,
+                     y = numberofcontracts))+
+  geom_point()+
+  scale_y_continuous(limits = quantile(ncontracts_case9$numberofcontracts, c(0.1, 0.99)))+
+  geom_vline(xintercept = as.numeric(as.yearmon(case9_date,"%m %Y")), linetype = 2, colour = "red")+
+  theme(axis.text.x=element_text(angle=90,hjust=1)) + labs(title="Monthly Number of single bid contracts", x="Date", y = "Monthly number of single bid contracts" , subtitle="Red line is the date of indictment of the corruption case")
+
+# T-test which include all the data
+# Creating the share of single bid contracts 
+ncontracts_case9 <- ncontracts_case9 %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, buyer_buyertype, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for before and after corruption case
+ncontracts_before_case9 <- ncontracts_case9[c(1:101),]
+ncontracts_after_case9 <- ncontracts_case9[c(102:200),]
+
+ncontracts_before_case9_s1 <- ncontracts_before_case9 %>% filter(singleb == 1)
+ncontracts_after_case9_s1 <- ncontracts_after_case9 %>% filter(singleb == 1)
+mean(ncontracts_before_case9_s1$share)
+mean(ncontracts_after_case9_s1$share)
+
+t9<-t.test(ncontracts_before_case9_s1$share, ncontracts_after_case9_s1$share, paired = FALSE, conf.level = 0.95)
+t9
+# T-test 1 year before and after the corruption case
+
+ncontracts_case9_1year <- ncontracts_case9[order(ncontracts_case9$date),]
+
+ncontracts_case9_1year <- ncontracts_case9_1year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 1 year before and after corruption case
+
+ncontracts_before_case9_1year <- ncontracts_case9_1year[c(79:101),]
+ncontracts_after_case9_1year <- ncontracts_case9_1year[c(102:111),]
+
+ncontracts_before_case9_1year_s1 <- ncontracts_before_case9_1year %>% filter(singleb == 1)
+ncontracts_after_case9_1year_s1 <- ncontracts_after_case9_1year %>% filter(singleb == 1)
+mean(ncontracts_before_case9_1year_s1$share)
+mean(ncontracts_after_case9_1year_s1$share)
+
+t9_1year<-t.test(ncontracts_before_case9_1year_s1$share, ncontracts_after_case9_1year_s1$share, paired = FALSE, conf.level = 0.95)
+t9_1year
+# T-test 2 year before and after the corruption case
+
+ncontracts_case9_2year <- ncontracts_case9[order(ncontracts_case9$date),]
+
+ncontracts_case9_2year <- ncontracts_case9_2year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 2 year before and after corruption case
+ncontracts_before_case9_2year <- ncontracts_case9_2year[c(54:101),]
+ncontracts_after_case9_2year <- ncontracts_case9_2year[c(102:161),]
+
+ncontracts_before_case9_2year_s1 <- ncontracts_before_case9_2year %>% filter(singleb == 1)
+ncontracts_after_case9_2year_s1 <- ncontracts_after_case9_2year %>% filter(singleb == 1)
+mean(ncontracts_before_case9_2year_s1$share)
+mean(ncontracts_after_case9_2year_s1$share)
+
+t9_2year<-t.test(ncontracts_before_case9_2year_s1$share, ncontracts_after_case9_2year_s1$share, paired = FALSE, conf.level = 0.95)
+t9_2year
+# T-test 3 year before and after the corruption case
+
+ncontracts_case9_3year <- ncontracts_case9[order(ncontracts_case9$date),]
+
+ncontracts_case9_3year <- ncontracts_case9_3year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 3 year before and after corruption case
+ncontracts_before_case9_3year <- ncontracts_case9_3year[c(34:101),]
+ncontracts_after_case9_3year <- ncontracts_case9_3year[c(102:191),]
+
+ncontracts_before_case9_3year_s1 <- ncontracts_before_case9_3year %>% filter(singleb == 1)
+ncontracts_after_case9_3year_s1 <- ncontracts_after_case9_3year %>% filter(singleb == 1)
+mean(ncontracts_before_case9_3year_s1$share)
+mean(ncontracts_after_case9_3year_s1$share)
+
+t9_3year<-t.test(ncontracts_before_case9_3year_s1$share, ncontracts_after_case9_3year_s1$share, paired = FALSE, conf.level = 0.95)
+t9_3year
+
+-----------------------------------------------------------------
+  # City nr 10: Study of Resita and the corruption case in 2015 
+-----------------------------------------------------------------
+  
+case10_date <- as.POSIXct(paste(enforcement_ro_collapsed[95,2]))
+case10_city_name <- as.character(paste(enforcement_ro_collapsed[95,1]))
+
+# Creating a subset with contracts only in the studied city 
+case10_procur <- main_ro %>% filter(buyer_city_original == case10_city_name)
+
+##Number single bid integrity variable
+ncontracts_case10 <- case10_procur %>% 
+  group_by(date, singleb)%>% 
+  mutate(numberofcontracts = n()) %>% 
+  select(singleb, date, numberofcontracts, buyer_buyertype, tender_maincpv, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+ncontracts_case10<-ncontracts_case10[order(ncontracts_case10$date),]
+ncontracts_case10
+
+ggplot(data = ncontracts_case10,
+       mapping = aes(x = date,
+                     y = numberofcontracts))+
+  geom_point()+
+  scale_y_continuous(limits = quantile(ncontracts_case10$numberofcontracts, c(0.1, 0.99)))+
+  geom_vline(xintercept = as.numeric(as.yearmon(case10_date,"%m %Y")), linetype = 2, colour = "red")+
+  theme(axis.text.x=element_text(angle=90,hjust=1)) + labs(title="Monthly Number of single bid contracts", x="Date", y = "Monthly number of single bid contracts" , subtitle="Red line is the date of indictment of the corruption case")
+
+# T-test which include all the data
+# Creating the share of single bid contracts 
+ncontracts_case10 <- ncontracts_case10 %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, buyer_buyertype, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for before and after corruption case
+ncontracts_before_case10 <- ncontracts_case10[c(1:142),]
+ncontracts_after_case10 <- ncontracts_case10[c(143:381),]
+
+ncontracts_before_case10_s1 <- ncontracts_before_case10 %>% filter(singleb == 1)
+ncontracts_after_case10_s1 <- ncontracts_after_case10 %>% filter(singleb == 1)
+mean(ncontracts_before_case10_s1$share)
+mean(ncontracts_after_case10_s1$share)
+
+t10<-t.test(ncontracts_before_case10_s1$share, ncontracts_after_case10_s1$share, paired = FALSE, conf.level = 0.95)
+t10
+# T-test 1 year before and after the corruption case
+
+ncontracts_case10_1year <- ncontracts_case10[order(ncontracts_case10$date),]
+
+ncontracts_case10_1year <- ncontracts_case10_1year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 1 year before and after corruption case
+
+ncontracts_before_case10_1year <- ncontracts_case10_1year[c(123:142),]
+ncontracts_after_case10_1year <- ncontracts_case10_1year[c(143:155),]
+
+ncontracts_before_case10_1year_s1 <- ncontracts_before_case10_1year %>% filter(singleb == 1)
+ncontracts_after_case10_1year_s1 <- ncontracts_after_case10_1year %>% filter(singleb == 1)
+mean(ncontracts_before_case10_1year_s1$share)
+mean(ncontracts_after_case10_1year_s1$share)
+
+t10_1year<-t.test(ncontracts_before_case10_1year_s1$share, ncontracts_after_case10_1year_s1$share, paired = FALSE, conf.level = 0.95)
+t10_1year
+# T-test 2 year before and after the corruption case
+
+ncontracts_case10_2year <- ncontracts_case10[order(ncontracts_case10$date),]
+
+ncontracts_case10_2year <- ncontracts_case10_2year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 2 year before and after corruption case
+ncontracts_before_case10_2year <- ncontracts_case10_2year[c(99:142),]
+ncontracts_after_case10_2year <- ncontracts_case10_2year[c(143:179),]
+
+ncontracts_before_case10_2year_s1 <- ncontracts_before_case10_2year %>% filter(singleb == 1)
+ncontracts_after_case10_2year_s1 <- ncontracts_after_case10_2year %>% filter(singleb == 1)
+mean(ncontracts_before_case10_2year_s1$share)
+mean(ncontracts_after_case10_2year_s1$share)
+
+t10_2year<-t.test(ncontracts_before_case10_2year_s1$share, ncontracts_after_case10_2year_s1$share, paired = FALSE, conf.level = 0.95)
+t10_2year
+# T-test 3 year before and after the corruption case
+
+ncontracts_case10_3year <- ncontracts_case10[order(ncontracts_case10$date),]
+
+ncontracts_case10_3year <- ncontracts_case10_3year %>% 
+  group_by(date) %>% 
+  mutate(share = round(numberofcontracts/sum(numberofcontracts),2)) %>% 
+  select(singleb, date, numberofcontracts, tender_maincpv, share, date_day, cri_ro, contractmonth, contractyear, tender_publications_firstdcontra, tender_finalprice) %>% 
+  distinct()
+
+#Creating vectors for 3 year before and after corruption case
+ncontracts_before_case10_3year <- ncontracts_case10_3year[c(80:142),]
+ncontracts_after_case10_3year <- ncontracts_case10_3year[c(143:244),]
+
+ncontracts_before_case10_3year_s1 <- ncontracts_before_case10_3year %>% filter(singleb == 1)
+ncontracts_after_case10_3year_s1 <- ncontracts_after_case10_3year %>% filter(singleb == 1)
+mean(ncontracts_before_case10_3year_s1$share)
+mean(ncontracts_after_case10_3year_s1$share)
+
+t10_3year<-t.test(ncontracts_before_case10_3year_s1$share, ncontracts_after_case10_3year_s1$share, paired = FALSE, conf.level = 0.95)
+t10_3year
+
+-----------------------------------------------------------------
+  # City nr X: Study of Bucuresti and the 6 corruption case between 2009 and 2016
+-----------------------------------------------------------------
+  
+#case1_date <- as.POSIXct(paste(enforcement_ro_collapsed[23,2]))
+#case2_date <- as.POSIXct(paste(enforcement_ro_collapsed[23,3]))
+#case3_date <- as.POSIXct(paste(enforcement_ro_collapsed[23,4]))
+#case4_date <- as.POSIXct(paste(enforcement_ro_collapsed[23,5]))
+#case5_date <- as.POSIXct(paste(enforcement_ro_collapsed[23,6]))
+#case6_date <- as.POSIXct(paste(enforcement_ro_collapsed[23,7]))
+#case1_city_name <- as.character(paste(enforcement_ro_collapsed[23,1]))
+
+# Creating a subset with contracts only in the studied city 
+#case1_procur <- main_ro %>% filter(buyer_city == case1_city_name)
+
+##Number single bid integrity variable
+#ncontracts_case1 <- case1_procur %>% 
+#  group_by(date, singleb)%>% 
+#  mutate(numberofcontracts = n()) %>% 
+#  select(date, numberofcontracts, singleb) %>% 
+#  distinct()
+
+#ncontracts_case1<-ncontracts_case1[order(ncontracts_case1$date),]
+#ncontracts_case1
+
+#ggplot(data = ncontracts_case1,
+#       mapping = aes(x = date,
+#                     y = numberofcontracts))+
+#  geom_point()+
+#  scale_y_continuous(limits = quantile(ncontracts_case1$numberofcontracts, c(0.1, 0.99)))+
+#  scale_x_continuous(limits = quantile(ncontracts_case1$date, c(0.1, 0.80)))+
+#  ylim(0,350)+
+#  xlim(2009,2020)+
+#  geom_vline(xintercept = as.numeric(as.yearmon(case1_date,"%m %Y")), linetype = 2, colour = "red")+
+#  geom_vline(xintercept = as.numeric(as.yearmon(case2_date,"%m %Y")), linetype = 2, colour = "red")+
+#  geom_vline(xintercept = as.numeric(as.yearmon(case3_date,"%m %Y")), linetype = 2, colour = "red")+
+#  geom_vline(xintercept = as.numeric(as.yearmon(case4_date,"%m %Y")), linetype = 2, colour = "red")+
+#  geom_vline(xintercept = as.numeric(as.yearmon(case5_date,"%m %Y")), linetype = 2, colour = "red")+
+#  geom_vline(xintercept = as.numeric(as.yearmon(case6_date,"%m %Y")), linetype = 2, colour = "red")+
+#  theme(axis.text.x=element_text(angle=90,hjust=1)) + labs(title="Monthly Number of single bid contracts", x="Date", y = "Monthly number of single bid contracts" , subtitle="Red line is the date of indictment of the corruption case")
+
+
+# ----------------------------------------
+# T-tests. SINGLE BID Overall, 1 year, 2 years, and 3 years before and after the corruption case.   
+# ------------------------------------------
+
+# Overall t-test compiled of the overall before after from the studied cities
+ncontracts_before_all <- rbind(ncontracts_before_case1_s1, ncontracts_before_case2_s1, ncontracts_before_case3_s1, ncontracts_before_case4_s1, ncontracts_before_case5_s1, ncontracts_before_case6_s1, ncontracts_before_case7_s1, ncontracts_before_case8_s1, ncontracts_before_case9_s1, ncontracts_before_case10_s1)
+ncontracts_after_all <- rbind(ncontracts_after_case1_s1, ncontracts_after_case2_s1, ncontracts_after_case3_s1, ncontracts_after_case4_s1, ncontracts_after_case5_s1, ncontracts_after_case6_s1, ncontracts_after_case7_s1, ncontracts_after_case8_s1, ncontracts_after_case9_s1,ncontracts_after_case10_s1)
+
+ncontracts_before_all <- as.data.frame(ncontracts_before_all)
+ncontracts_after_all <- as.data.frame(ncontracts_after_all)
+
+mean(ncontracts_before_all$share)
+mean(ncontracts_after_all$share)
+
+t_all<-t.test(ncontracts_before_all$share, ncontracts_after_all$share, paired = FALSE, conf.level = 0.95)
+t_all
+
+
+# One year before and after t-test
+ncontracts_before_1year <- rbind(ncontracts_before_case1_1year_s1, ncontracts_before_case2_1year_s1, ncontracts_before_case3_1year_s1, ncontracts_before_case4_1year_s1, ncontracts_before_case5_1year_s1, ncontracts_before_case6_1year_s1, ncontracts_before_case7_1year_s1, ncontracts_before_case8_1year_s1, ncontracts_before_case9_1year_s1, ncontracts_before_case10_1year_s1)
+ncontracts_after_1year <- rbind(ncontracts_after_case1_1year_s1, ncontracts_after_case2_1year_s1, ncontracts_after_case3_1year_s1, ncontracts_after_case4_1year_s1, ncontracts_after_case5_1year_s1, ncontracts_after_case6_1year_s1, ncontracts_after_case7_1year_s1, ncontracts_after_case8_1year_s1, ncontracts_after_case9_1year_s1,ncontracts_after_case10_1year_s1)
+
+ncontracts_before_1year <- as.data.frame(ncontracts_before_1year)
+ncontracts_after_1year <- as.data.frame(ncontracts_after_1year)
+
+mean(ncontracts_before_1year$share)
+mean(ncontracts_after_1year$share)
+
+t_1year<-t.test(ncontracts_before_1year$share, ncontracts_after_1year$share, paired = FALSE, conf.level = 0.95)
+t_1year
+
+# Two years before and after t-test
+ncontracts_before_2year <- rbind(ncontracts_before_case1_2year_s1, ncontracts_before_case2_2year_s1, ncontracts_before_case3_2year_s1, ncontracts_before_case4_2year_s1, ncontracts_before_case5_2year_s1, ncontracts_before_case6_2year_s1, ncontracts_before_case7_2year_s1, ncontracts_before_case8_2year_s1, ncontracts_before_case9_2year_s1, ncontracts_before_case10_2year_s1)
+ncontracts_after_2year <- rbind(ncontracts_after_case1_2year_s1, ncontracts_after_case2_2year_s1, ncontracts_after_case3_2year_s1, ncontracts_after_case4_2year_s1, ncontracts_after_case5_2year_s1, ncontracts_after_case6_2year_s1, ncontracts_after_case7_2year_s1, ncontracts_after_case8_2year_s1, ncontracts_after_case9_2year_s1,ncontracts_after_case10_2year_s1)
+
+ncontracts_before_2year <- as.data.frame(ncontracts_before_2year)
+ncontracts_after_2year <- as.data.frame(ncontracts_after_2year)
+
+mean(ncontracts_before_2year$share)
+mean(ncontracts_after_2year$share)
+
+t_2year<-t.test(ncontracts_before_2year$share, ncontracts_after_2year$share, paired = FALSE, conf.level = 0.95)
+t_2year
+
+# Three years before and after t-test
+ncontracts_before_3year <- rbind(ncontracts_before_case1_3year_s1, ncontracts_before_case2_3year_s1, ncontracts_before_case3_3year_s1, ncontracts_before_case4_3year_s1, ncontracts_before_case5_3year_s1, ncontracts_before_case6_3year_s1, ncontracts_before_case7_3year_s1, ncontracts_before_case8_3year_s1, ncontracts_before_case9_3year_s1, ncontracts_before_case10_3year_s1)
+ncontracts_after_3year <- rbind(ncontracts_after_case1_3year_s1, ncontracts_after_case2_3year_s1, ncontracts_after_case3_3year_s1, ncontracts_after_case4_3year_s1, ncontracts_after_case5_3year_s1, ncontracts_after_case6_3year_s1, ncontracts_after_case7_3year_s1, ncontracts_after_case8_3year_s1, ncontracts_after_case9_3year_s1,ncontracts_after_case10_3year_s1)
+
+ncontracts_before_3year <- as.data.frame(ncontracts_before_3year)
+ncontracts_after_3year <- as.data.frame(ncontracts_after_3year)
+
+mean(ncontracts_before_3year$share)
+mean(ncontracts_after_3year$share)
+
+t_3year<-t.test(ncontracts_before_3year$share, ncontracts_after_3year$share, paired = FALSE, conf.level = 0.95)
+t_3year
+
+#Table of overall t-test from all contracts before after 1/2/3 years + all contracts. 
+tab <- map_df(list(t_1year, t_2year, t_3year, t_all), tidy)
+tab[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+
+
+#
+# Preparing for regressions
+#
+
+# Making time frames before and after the corruption case that are not date specific. 
+# Case 1
+case1_s1 <- case1_procur %>% filter(singleb == 1)
+case1_s1$ord <- NULL
+for(i in 1:nrow(case1_s1)){
+  case1_s1$ord[i] <- round(as.integer(difftime(case1_s1$date_day[i], as.yearmon(case1_date, units = "weeks")))/31,0)
+}
+
+case1_s1_1y <-  case1_s1 %>% filter(ord <=12 & ord >=-12)
+case1_s1_2y <-  case1_s1 %>% filter(ord <=24 & ord >=-24)
+case1_s1_3y <-  case1_s1 %>% filter(ord <=36 & ord >=-36)
+
+# Case 2
+case2_s1 <- case2_procur %>% filter(singleb == 1)
+case2_s1$ord <- NULL
+for(i in 1:nrow(case2_s1)){
+  case2_s1$ord[i] <- round(as.integer(difftime(case2_s1$date_day[i], as.yearmon(case2_date, units = "weeks")))/31,0)
+}
+
+case2_s1_1y <-  case2_s1 %>% filter(ord <=12 & ord >=-12)
+case2_s1_2y <-  case2_s1 %>% filter(ord <=24 & ord >=-24)
+case2_s1_3y <-  case2_s1 %>% filter(ord <=36 & ord >=-36)
+
+# Case 3
+case3_s1 <- case3_procur %>% filter(singleb == 1)
+case3_s1$ord <- NULL
+for(i in 1:nrow(case3_s1)){
+  case3_s1$ord[i] <- round(as.integer(difftime(case3_s1$date_day[i], as.yearmon(case3_date, units = "weeks")))/31,0)
+}
+
+case3_s1_1y <-  case3_s1 %>% filter(ord <=12 & ord >=-12)
+case3_s1_2y <-  case3_s1 %>% filter(ord <=24 & ord >=-24)
+case3_s1_3y <-  case3_s1 %>% filter(ord <=36 & ord >=-36)
+
+# Case 4
+case4_s1 <- case4_procur %>% filter(singleb == 1)
+case4_s1$ord <- NULL
+for(i in 1:nrow(case4_s1)){
+  case4_s1$ord[i] <- round(as.integer(difftime(case4_s1$date_day[i], as.yearmon(case4_date, units = "weeks")))/31,0)
+}
+
+case4_s1_1y <-  case4_s1 %>% filter(ord <=12 & ord >=-12)
+case4_s1_2y <-  case4_s1 %>% filter(ord <=24 & ord >=-24)
+case4_s1_3y <-  case4_s1 %>% filter(ord <=36 & ord >=-36)
+
+# Case 5
+case5_s1 <- case5_procur %>% filter(singleb == 1)
+case5_s1$ord <- NULL
+for(i in 1:nrow(case5_s1)){
+  case5_s1$ord[i] <- round(as.integer(difftime(case5_s1$date_day[i], as.yearmon(case5_date, units = "weeks")))/31,0)
+}
+
+case5_s1_1y <-  case5_s1 %>% filter(ord <=12 & ord >=-12)
+case5_s1_2y <-  case5_s1 %>% filter(ord <=24 & ord >=-24)
+case5_s1_3y <-  case5_s1 %>% filter(ord <=36 & ord >=-36)
+
+# Case 6
+case6_s1 <- case6_procur %>% filter(singleb == 1)
+case6_s1$ord <- NULL
+for(i in 1:nrow(case6_s1)){
+  case6_s1$ord[i] <- round(as.integer(difftime(case6_s1$date_day[i], as.yearmon(case6_date, units = "weeks")))/31,0)
+}
+
+case6_s1_1y <-  case6_s1 %>% filter(ord <=12 & ord >=-12)
+case6_s1_2y <-  case6_s1 %>% filter(ord <=24 & ord >=-24)
+case6_s1_3y <-  case6_s1 %>% filter(ord <=36 & ord >=-36)
+
+# Case 7
+case7_s1 <- case7_procur %>% filter(singleb == 1)
+case7_s1$ord <- NULL
+for(i in 1:nrow(case7_s1)){
+  case7_s1$ord[i] <- round(as.integer(difftime(case7_s1$date_day[i], as.yearmon(case7_date, units = "weeks")))/31,0)
+}
+
+case7_s1_1y <-  case7_s1 %>% filter(ord <=12 & ord >=-12)
+case7_s1_2y <-  case7_s1 %>% filter(ord <=24 & ord >=-24)
+case7_s1_3y <-  case7_s1 %>% filter(ord <=36 & ord >=-36)
+
+# Case 8
+case8_s1 <- case8_procur %>% filter(singleb == 1)
+case8_s1$ord <- NULL
+for(i in 1:nrow(case8_s1)){
+  case8_s1$ord[i] <- round(as.integer(difftime(case8_s1$date_day[i], as.yearmon(case8_date, units = "weeks")))/31,0)
+}
+
+case8_s1_1y <-  case8_s1 %>% filter(ord <=12 & ord >=-12)
+case8_s1_2y <-  case8_s1 %>% filter(ord <=24 & ord >=-24)
+case8_s1_3y <-  case8_s1 %>% filter(ord <=36 & ord >=-36)
+
+# Case 9
+case9_s1 <- case9_procur %>% filter(singleb == 1)
+case9_s1$ord <- NULL
+for(i in 1:nrow(case9_s1)){
+  case9_s1$ord[i] <- round(as.integer(difftime(case9_s1$date_day[i], as.yearmon(case9_date, units = "weeks")))/31,0)
+}
+
+case9_s1_1y <-  case9_s1 %>% filter(ord <=12 & ord >=-12)
+case9_s1_2y <-  case9_s1 %>% filter(ord <=24 & ord >=-24)
+case9_s1_3y <-  case9_s1 %>% filter(ord <=36 & ord >=-36)
+
+# Case 10
+case10_s1 <- case10_procur %>% filter(singleb == 1)
+case10_s1$ord <- NULL
+for(i in 1:nrow(case10_s1)){
+  case10_s1$ord[i] <- round(as.integer(difftime(case10_s1$date_day[i], as.yearmon(case10_date, units = "weeks")))/31,0)
+}
+
+case10_s1_1y <-  case10_s1 %>% filter(ord <=12 & ord >=-12)
+case10_s1_2y <-  case10_s1 %>% filter(ord <=24 & ord >=-24)
+case10_s1_3y <-  case10_s1 %>% filter(ord <=36 & ord >=-36)
+
+
+# REGRESSIONS
+# 3 year regression
+
+reg_3year <- rbind(case1_s1_3y, case2_s1_3y, case3_s1_3y, case4_s1_3y, case5_s1_3y,
+                   case6_s1_3y, case7_s1_3y, case8_s1_3y,case9_s1_3y,case10_s1_3y)
+
+#log tender price 
+reg_3year$log_price <- log(reg_3year$tender_finalprice)
+reg_3year <- reg_3year %>% filter(!is.na(log_price))
+
+f <- chisq.test(reg_3year$date_day , reg_3year$singleb, correct = FALSE)
+f
+f$observed
+
+m3_logit <- glm(singleb ~ date_day + contractmonth + contractyear + log_price + buyer_buyertype, family = "binomial", data = reg_3year)
+  
+summary.glm(m3_logit)
+RsqGLM(m3_logit)
+
+m3_ols <- lm(singleb ~ date_day + contractmonth + contractyear + log_price + buyer_buyertype, data = reg_3year)
+summary.lm(m3_ols)
+
+# 2 year regression
+
+reg_2year <- rbind(case1_s1_2y, case2_s1_2y, case3_s1_2y, case4_s1_2y, case5_s1_2y,
+                   case6_s1_2y, case7_s1_2y, case8_s1_2y,case9_s1_2y,case10_s1_2y)
+
+#log tender price 
+reg_2year$log_price <- log(reg_2year$tender_finalprice)
+
+reg_2year <- reg_2year %>% filter(!is.na(log_price))
+
+#Logit 2 years
+m2_logit <- glm(singleb ~ date_day + contractmonth + contractyear + log_price + buyer_buyertype, family = "binomial", data = reg_2year)
+
+summary.glm(m2_logit)
+RsqGLM(m2_logit)
+
+#OLS 2 years
+
+m2_ols <- lm(singleb ~ date_day + contractmonth + contractyear + log_price + buyer_buyertype, data = reg_2year)
+summary.lm(m2_ols)
+
+# 1 year regression
+
+reg_1year <- rbind(case1_s1_1y, case2_s1_1y, case3_s1_1y, case4_s1_1y, case5_s1_1y,
+                   case6_s1_1y, case7_s1_1y, case8_s1_1y,case9_s1_1y,case10_s1_1y)
+
+#log tender price 
+reg_1year$log_price <- log(reg_1year$tender_finalprice)
+
+reg_1year <- reg_1year %>% filter(!is.na(log_price))
+
+#Logit 1 years
+m1_logit <- glm(singleb ~ date_day + contractmonth + contractyear + log_price + buyer_buyertype, family = "binomial", data = reg_1year)
+
+summary.glm(m1_logit)
+RsqGLM(m1_logit)
+
+#OLS 1 years
+
+m1_ols <- lm(singleb ~ date_day + contractmonth + contractyear + log_price + buyer_buyertype, data = reg_1year)
+summary.lm(m1_ols)
+
+#Creating output tables for latex
+stargazer(m1_logit, m2_logit, m3_logit,  
+          title="Results Single Bid LOGIT", 
+          align = TRUE,
+          single.row=TRUE,
+          column.sep.width = "1pt",
+          font.size = "small")
+
+stargazer(m1_ols, m2_ols, m3_ols,  
+          title="Results Single Bid OLS", 
+          align = TRUE,
+          single.row=TRUE,
+          column.sep.width = "1pt",
+          font.size = "small")
+
+
+
+#-----------------------------------------------------------------
+
+#Number of single bid contracts in total
+total_singleb <- main_ro %>% filter(singleb == "1" )
+
+ggplot(total_singleb) + aes (x = contractyear) + geom_bar()
+abline(m3_ols_1, col=2, lwd=3)
+
+#Number of contracts in total 
+
+ggplot(main_ro) + aes (x = contractyear) + geom_bar()
+
+count1 <- main_ro %>% filter(singleb == "1")
+count2 <- main_ro %>% filter(lot_bidscount == "1")
+
+
