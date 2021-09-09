@@ -1,0 +1,595 @@
+library(dplyr)
+library(data.table)
+library(readxl)
+library(readr)
+library(stringr)
+library(stringi)
+library(openxlsx)
+library(tidyr)
+library(zoo)
+library(ggplot2)
+library(forcats)
+library(vroom)
+library(foreign)
+library(haven)
+library(tidyverse)
+library(purrr)
+library(broom)
+library(modEvA)
+library(stargazer)
+
+
+
+Sys.setenv(TZ = "GMT")
+memory.limit(size = 30000)
+gc()
+
+setwd("C:/Users/s13476/OneDrive - Norges Handelshøyskole/My papers/Paper 3/Data/") 
+raw_ro1 <- fread(file = "RO_may21.csv", 
+                 sep=",",
+                 select = c("tender_id", 
+                            "tender_maincpv",
+                            "tender_finalprice",
+                            "buyer_city_original",
+                            "buyer_postcode",
+                            "tender_publications_firstdcontra",
+                            "bid_digiwhist_price",
+                            "singleb",
+                            "aw_date",
+                            "lot_bidscount",
+                            "cri_ro"),
+                 encoding='UTF-8')
+
+#Import the enforcement data
+enforcement_ro <- read_excel("C:/Users/s13476/OneDrive - Norges Handelshøyskole/My papers/Paper 3/Data/Archive/data-ro-csv/enforcement_ro.xlsx")
+
+names(raw_ro1)
+Sys.setlocale(locale = "C")
+raw_ro1$date_day<- as.Date(raw_ro1$aw_date, format= "%d%b%Y")
+
+#Creating data frames 
+enforcement_ro<-data.frame(enforcement_ro)
+main_ro <- data.frame(raw_ro1)
+
+#Making integer of the post codes
+main_ro$buyer_postcode <- as.integer(raw_ro1$buyer_postcode)
+
+#Filter out entries that don't have either city name of post code
+main_ro <- main_ro %>% filter(!is.na(buyer_city_original) | !is.na(buyer_postcode))
+
+#Remove missing in award date procurement
+main_ro <- main_ro %>% filter(!is.na(date))
+
+#Filter out contracts that are too small. The threshold is set at 130 000 RON which equal 26 000 EUR 
+main_ro <- main_ro %>% filter(tender_finalprice > 26000)
+
+#Make all variable names in the enforcement data lower case
+names(enforcement_ro) <- tolower(names(enforcement_ro))
+
+#Fix formatting on municipality names
+main_ro$buyer_city_original <- stri_trans_general(main_ro$buyer_city_original,id = "latin-ascii")
+
+#Delete rows that correspond to the same case, so that one corruption case only occur once.
+enforcement_ro <- distinct(enforcement_ro,nr_of_penal_decision, .keep_all=TRUE)
+enforcement_ro_edited<-enforcement_ro
+#keeps <- c("nr_of_penal_decision","municipality", "zip_code", "date_of_definitive_sentencing", "date_of_indictment")
+keeps <- c("municipality", "date_of_indictment")
+enforcement_ro_edited<-enforcement_ro_edited[keeps]
+
+#Defining dates.
+enforcement_ro$date_of_definitive_sentencing <- as.POSIXct(enforcement_ro$date_of_definitive_sentencing, format='%Y/%m/%d') 
+enforcement_ro$date_of_indictment <- as.POSIXct(enforcement_ro$date_of_indictment, format='%Y/%m/%d')  
+main_ro$tender_publications_firstdcontra <-as.POSIXct(main_ro$tender_publications_firstdcontra, format='%Y/%m/%d')
+
+#filter out corruption cases that happened before the 2009 (before we have procurement data)
+procurment_start <- as.POSIXct("2009-01-01")
+procurment_end <- as.POSIXct("2019-12-31")
+enforcement_ro_edited <- enforcement_ro_edited %>% filter(date_of_indictment>=procurment_start)
+
+#filer cases before 2009 and after 2019 (we do not want entries influenced by corona)
+main_ro <- main_ro %>% filter(tender_publications_firstdcontra < procurment_end)
+
+#Collapse the enforcement data, so that each municipality only occur once (one municipality per row) and cases appear in
+#one column each.
+enforcement_ro_collapsed <- enforcement_ro_edited %>% 
+  group_by_at(vars(municipality)) %>%
+  summarize_all(paste, collapse=",") %>%
+  separate(col= "date_of_indictment", into= c("case1","case2","case3","case4","case5","case6"), sep = ",")
+
+#Overview of all the cities that the data set contains. 
+procuring_cities <- distinct(main_ro,buyer_city_original, .keep_all=TRUE)
+
+##Removing Missing CRI_RO
+main_ro<- main_ro %>% filter(!is.na(cri_ro))
+
+#Dummy for treated municipalities 
+treated_cities <- enforcement_ro_collapsed$municipality
+
+
+##Extracting months and years for the procurement contracts
+main_ro$contractyear<- ifelse(is.na(main_ro$tender_publications_firstdcontra), substring(main_ro$tender_publications_firstdcontra,1,4),substring(main_ro$tender_publications_firstdcontra,1,4)) #Contract year
+main_ro$contractmonth <- ifelse(is.na(main_ro$tender_publications_firstdcontra), substring(main_ro$tender_publications_firstdcontra,6,7),substring(main_ro$tender_publications_firstdcontra,6,7)) #Contract month
+
+#Generating month and year as date
+main_ro$date <- as.yearmon(paste(main_ro$contractmonth, main_ro$contractyear), "%m %Y")
+ 
+#Fixing cities with multiple names
+main_ro$buyer_city_original <- as.character(main_ro$buyer_city_original)
+main_ro$buyer_city_original[main_ro$buyer_city_original == "Iasi (Iasi)"] <- "Iasi"
+main_ro$buyer_city_original[main_ro$buyer_city_original == "DROBETA-TURNU SEVERIN"] <- "Drobeta-Turnu Severin"
+
+#Counting the amount of cases for each city to extract which cities are relevant to study
+count <- as.data.frame(table(main_ro$buyer_city_original))
+count <- count %>% filter(count$Freq>300)
+
+#----------------------
+#CITY NR 1: ALEXANDRIA
+#----------------------
+
+case1_date <- as.POSIXct(paste(enforcement_ro_collapsed[2,2]))
+case1_city_name <- as.character(paste(enforcement_ro_collapsed[2,1]))
+
+# Creating a subset with contracts only in the studied city 
+case1_procur <- main_ro %>% filter(buyer_city_original == case1_city_name)
+
+# T-test all 
+case1_cri_bf <- case1_procur %>% filter(date_day < case1_date)
+case1_cri_af <- case1_procur %>% filter(date_day > case1_date)
+
+t_cri1<-t.test(case1_cri_bf$cri_ro, case1_cri_af$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri1
+
+# T-test 1 year
+case1_cri_bf_1y <- main_ro %>% filter(date_day < case1_date & date_day > "2015-07-15")
+case1_cri_af_1y <- main_ro %>% filter(date_day > case1_date & date_day < "2017-07-15")
+
+t_cri1_1 <- t.test(case1_cri_bf_1y$cri_ro, case1_cri_af_1y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri1_1
+
+# T-test 2 year
+case1_cri_bf_2y <- main_ro %>% filter(date_day < case1_date & date_day > "2014-07-15")
+case1_cri_af_2y <- main_ro %>% filter(date_day > case1_date & date_day < "2018-07-15")
+
+t_cri1_2 <- t.test(case1_cri_bf_2y$cri_ro, case1_cri_af_2y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri1_2
+
+# T-test 3 year
+case1_cri_bf_3y <- main_ro %>% filter(date_day < case1_date & date_day > "2013-07-15")
+case1_cri_af_3y <- main_ro %>% filter(date_day > case1_date & date_day < "2019-07-15")
+
+t_cri1_3 <- t.test(case1_cri_bf_3y$cri_ro, case1_cri_af_3y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri1_3
+
+#----------------------
+#CITY NR 2: ARAD
+#----------------------
+
+case2_date <- as.POSIXct(paste(enforcement_ro_collapsed[5,2]))
+case2_city_name <- as.character(paste(enforcement_ro_collapsed[5,1]))
+
+# Creating a subset with contracts only in the studied city 
+case2_procur <- main_ro %>% filter(buyer_city_original == case2_city_name)
+
+# T-test all 
+case2_cri_bf <- case2_procur %>% filter(date_day < case2_date)
+case2_cri_af <- case2_procur %>% filter(date_day > case2_date)
+
+t_cri2<-t.test(case2_cri_bf$cri_ro, case2_cri_af$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri2
+
+# T-test 1 year
+case2_cri_bf_1y <- main_ro %>% filter(date_day < case2_date & date_day > "2015-04-06")
+case2_cri_af_1y <- main_ro %>% filter(date_day > case2_date & date_day < "2017-04-06")
+
+t_cri2_1 <- t.test(case2_cri_bf_1y$cri_ro, case2_cri_af_1y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri2_1
+
+# T-test 2 year
+case2_cri_bf_2y <- main_ro %>% filter(date_day < case2_date & date_day > "2014-04-06")
+case2_cri_af_2y <- main_ro %>% filter(date_day > case2_date & date_day < "2018-04-06")
+
+t_cri2_2 <- t.test(case2_cri_bf_2y$cri_ro, case2_cri_af_2y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri2_2
+
+# T-test 3 year
+case2_cri_bf_3y <- main_ro %>% filter(date_day < case2_date & date_day > "2013-04-06")
+case2_cri_af_3y <- main_ro %>% filter(date_day > case2_date & date_day < "2019-04-06")
+
+t_cri2_3 <- t.test(case2_cri_bf_3y$cri_ro, case2_cri_af_3y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri2_3
+
+#----------------------
+#CITY NR 3: BACAU
+#----------------------
+
+case3_date <- as.POSIXct(paste(enforcement_ro_collapsed[7,2]))
+case3_city_name <- as.character(paste(enforcement_ro_collapsed[7,1]))
+
+# Creating a subset with contracts only in the studied city 
+case3_procur <- main_ro %>% filter(buyer_city_original == case3_city_name)
+
+# T-test all 
+case3_cri_bf <- case3_procur %>% filter(date_day < case3_date)
+case3_cri_af <- case3_procur %>% filter(date_day > case3_date)
+
+t_cri3<-t.test(case3_cri_bf$cri_ro, case3_cri_af$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri3
+
+# T-test 1 year
+case3_cri_bf_1y <- main_ro %>% filter(date_day < case3_date & date_day > "2013-02-28")
+case3_cri_af_1y <- main_ro %>% filter(date_day > case3_date & date_day < "2015-02-28")
+
+t_cri3_1 <- t.test(case3_cri_bf_1y$cri_ro, case3_cri_af_1y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri3_1
+
+# T-test 2 year
+case3_cri_bf_2y <- main_ro %>% filter(date_day < case3_date & date_day > "2012-02-28")
+case3_cri_af_2y <- main_ro %>% filter(date_day > case3_date & date_day < "2016-02-28")
+
+t_cri3_2 <- t.test(case3_cri_bf_2y$cri_ro, case3_cri_af_2y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri3_2
+
+# T-test 3 year
+case3_cri_bf_3y <- main_ro %>% filter(date_day < case3_date & date_day > "2011-02-28")
+case3_cri_af_3y <- main_ro %>% filter(date_day > case3_date & date_day < "2017-02-28")
+
+t_cri3_3 <- t.test(case3_cri_bf_3y$cri_ro, case3_cri_af_3y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri3_3
+
+#----------------------
+#CITY NR 4: BUZAU
+#----------------------
+
+case4_date <- as.POSIXct(paste(enforcement_ro_collapsed[24,2]))
+case4_city_name <- as.character(paste(enforcement_ro_collapsed[24,1]))
+
+# Creating a subset with contracts only in the studied city 
+case4_procur <- main_ro %>% filter(buyer_city_original == case4_city_name)
+
+# T-test all 
+case4_cri_bf <- case4_procur %>% filter(date_day < case4_date)
+case4_cri_af <- case4_procur %>% filter(date_day > case4_date)
+
+t_cri4<-t.test(case4_cri_bf$cri_ro, case4_cri_af$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri4
+
+# T-test 1 year
+case4_cri_bf_1y <- main_ro %>% filter(date_day < case4_date & date_day > "2012-07-11")
+case4_cri_af_1y <- main_ro %>% filter(date_day > case4_date & date_day < "2014-07-11")
+
+t_cri4_1 <- t.test(case4_cri_bf_1y$cri_ro, case4_cri_af_1y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri4_1
+
+# T-test 2 year
+case4_cri_bf_2y <- main_ro %>% filter(date_day < case4_date & date_day > "2011-07-11")
+case4_cri_af_2y <- main_ro %>% filter(date_day > case4_date & date_day < "2015-07-11")
+
+t_cri4_2 <- t.test(case4_cri_bf_2y$cri_ro, case4_cri_af_2y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri4_2
+
+# T-test 3 year
+case4_cri_bf_3y <- main_ro %>% filter(date_day < case4_date & date_day > "2010-07-11")
+case4_cri_af_3y <- main_ro %>% filter(date_day > case4_date & date_day < "2016-07-11")
+
+t_cri4_3 <- t.test(case4_cri_bf_3y$cri_ro, case4_cri_af_3y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri4_3
+
+#----------------------
+#CITY NR 5: TIMISOARA
+#----------------------
+
+case5_date <- as.POSIXct(paste(enforcement_ro_collapsed[114,3]))
+case5_city_name <- as.character(paste(enforcement_ro_collapsed[114,1]))
+
+# Creating a subset with contracts only in the studied city 
+case5_procur <- main_ro %>% filter(buyer_city_original == case5_city_name)
+
+# T-test all 
+case5_cri_bf <- case5_procur %>% filter(date_day < case5_date)
+case5_cri_af <- case5_procur %>% filter(date_day > case5_date)
+
+t_cri5<-t.test(case5_cri_bf$cri_ro, case5_cri_af$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri5
+
+# T-test 1 year
+case5_cri_bf_1y <- main_ro %>% filter(date_day < case5_date & date_day > "2014-08-13")
+case5_cri_af_1y <- main_ro %>% filter(date_day > case5_date & date_day < "2016-08-13")
+
+t_cri5_1 <- t.test(case5_cri_bf_1y$cri_ro, case5_cri_af_1y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri5_1
+
+# T-test 2 year
+case5_cri_bf_2y <- main_ro %>% filter(date_day < case5_date & date_day > "2013-08-13")
+case5_cri_af_2y <- main_ro %>% filter(date_day > case5_date & date_day < "2017-08-13")
+
+t_cri5_2 <- t.test(case5_cri_bf_2y$cri_ro, case5_cri_af_2y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri5_2
+
+# T-test 3 year
+case5_cri_bf_3y <- main_ro %>% filter(date_day < case5_date & date_day > "2012-08-13")
+case5_cri_af_3y <- main_ro %>% filter(date_day > case5_date & date_day < "2018-08-13")
+
+t_cri5_3 <- t.test(case5_cri_bf_3y$cri_ro, case5_cri_af_3y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri5_3
+
+#----------------------
+#CITY NR 6: IASI
+#----------------------
+
+case6_date <- as.POSIXct(paste(enforcement_ro_collapsed[63,3]))
+case6_city_name <- as.character(paste(enforcement_ro_collapsed[63,1]))
+
+# Creating a subset with contracts only in the studied city 
+case6_procur <- main_ro %>% filter(buyer_city_original == case6_city_name)
+
+# T-test all 
+case6_cri_bf <- case6_procur %>% filter(date_day < case6_date)
+case6_cri_af <- case6_procur %>% filter(date_day > case6_date)
+
+t_cri6<-t.test(case6_cri_bf$cri_ro, case6_cri_af$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri6
+
+# T-test 1 year
+case6_cri_bf_1y <- main_ro %>% filter(date_day < case6_date & date_day > "2013-10-16")
+case6_cri_af_1y <- main_ro %>% filter(date_day > case6_date & date_day < "2015-10-16")
+
+t_cri6_1 <- t.test(case6_cri_bf_1y$cri_ro, case6_cri_af_1y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri6_1
+
+# T-test 2 year
+case6_cri_bf_2y <- main_ro %>% filter(date_day < case6_date & date_day > "2012-10-16")
+case6_cri_af_2y <- main_ro %>% filter(date_day > case6_date & date_day < "2016-10-16")
+
+t_cri6_2 <- t.test(case6_cri_bf_2y$cri_ro, case6_cri_af_2y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri6_2
+
+# T-test 3 year
+case6_cri_bf_3y <- main_ro %>% filter(date_day < case6_date & date_day > "2011-10-16")
+case6_cri_af_3y <- main_ro %>% filter(date_day > case6_date & date_day < "2017-10-16")
+
+t_cri6_3 <- t.test(case6_cri_bf_3y$cri_ro, case6_cri_af_3y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri6_3
+
+
+#----------------------
+#CITY NR 7: CRAIOVA
+#----------------------
+
+case7_date <- as.POSIXct(paste(enforcement_ro_collapsed[38,3]))
+case7_city_name <- as.character(paste(enforcement_ro_collapsed[38,1]))
+
+# Creating a subset with contracts only in the studied city 
+case7_procur <- main_ro %>% filter(buyer_city_original == case7_city_name)
+
+# T-test all 
+case7_cri_bf <- case7_procur %>% filter(date_day < case7_date)
+case7_cri_af <- case7_procur %>% filter(date_day > case7_date)
+
+t_cri7<-t.test(case7_cri_bf$cri_ro, case7_cri_af$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri7
+
+# T-test 1 year
+case7_cri_bf_1y <- main_ro %>% filter(date_day < case7_date & date_day > "2014-05-11")
+case7_cri_af_1y <- main_ro %>% filter(date_day > case7_date & date_day < "2016-05-11")
+
+t_cri7_1 <- t.test(case7_cri_bf_1y$cri_ro, case7_cri_af_1y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri7_1
+
+# T-test 2 year
+case7_cri_bf_2y <- main_ro %>% filter(date_day < case7_date & date_day > "2013-05-11")
+case7_cri_af_2y <- main_ro %>% filter(date_day > case7_date & date_day < "2017-05-11")
+
+t_cri7_2 <- t.test(case7_cri_bf_2y$cri_ro, case7_cri_af_2y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri7_2
+
+# T-test 3 year
+case7_cri_bf_3y <- main_ro %>% filter(date_day < case7_date & date_day > "2012-05-11")
+case7_cri_af_3y <- main_ro %>% filter(date_day > case7_date & date_day < "2018-05-11")
+
+t_cri7_3 <- t.test(case7_cri_bf_3y$cri_ro, case7_cri_af_3y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri7_3
+
+#----------------------
+#CITY NR 8: DROBETA-TURNU SEVERIN
+#----------------------
+
+case8_date <- as.POSIXct(paste(enforcement_ro_collapsed[44,2]))
+case8_city_name <- as.character(paste(enforcement_ro_collapsed[44,1]))
+
+# Creating a subset with contracts only in the studied city 
+case8_procur <- main_ro %>% filter(buyer_city_original == case8_city_name)
+
+# T-test all 
+case8_cri_bf <- case8_procur %>% filter(date_day < case8_date)
+case8_cri_af <- case8_procur %>% filter(date_day > case8_date)
+
+t_cri8<-t.test(case8_cri_bf$cri_ro, case8_cri_af$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri8
+
+# T-test 1 year
+case8_cri_bf_1y <- main_ro %>% filter(date_day < case8_date & date_day > "2013-03-27")
+case8_cri_af_1y <- main_ro %>% filter(date_day > case8_date & date_day < "2015-03-27")
+
+t_cri8_1 <- t.test(case8_cri_bf_1y$cri_ro, case8_cri_af_1y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri8_1
+
+# T-test 2 year
+case8_cri_bf_2y <- main_ro %>% filter(date_day < case8_date & date_day > "2012-03-27")
+case8_cri_af_2y <- main_ro %>% filter(date_day > case8_date & date_day < "2016-03-27")
+
+t_cri8_2 <- t.test(case8_cri_bf_2y$cri_ro, case8_cri_af_2y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri8_2
+
+# T-test 3 year
+case8_cri_bf_3y <- main_ro %>% filter(date_day < case8_date & date_day > "2011-03-27")
+case8_cri_af_3y <- main_ro %>% filter(date_day > case8_date & date_day < "2017-03-27")
+
+t_cri8_3 <- t.test(case8_cri_bf_3y$cri_ro, case8_cri_af_3y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri8_3
+
+#----------------------
+#CITY NR 9: MIERCUREA CIUC
+#----------------------
+
+case9_date <- as.POSIXct(paste(enforcement_ro_collapsed[75,2]))
+case9_city_name <- as.character(paste(enforcement_ro_collapsed[75,1]))
+
+# Creating a subset with contracts only in the studied city 
+case9_procur <- main_ro %>% filter(buyer_city_original == case9_city_name)
+
+# T-test all 
+case9_cri_bf <- case9_procur %>% filter(date_day < case9_date)
+case9_cri_af <- case9_procur %>% filter(date_day > case9_date)
+
+t_cri9<-t.test(case9_cri_bf$cri_ro, case9_cri_af$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri9
+
+# T-test 1 year
+case9_cri_bf_1y <- main_ro %>% filter(date_day < case9_date & date_day > "2015-05-06")
+case9_cri_af_1y <- main_ro %>% filter(date_day > case9_date & date_day < "2017-05-06")
+
+t_cri9_1 <- t.test(case9_cri_bf_1y$cri_ro, case9_cri_af_1y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri9_1
+
+# T-test 2 year
+case9_cri_bf_2y <- main_ro %>% filter(date_day < case9_date & date_day > "2014-05-06")
+case9_cri_af_2y <- main_ro %>% filter(date_day > case9_date & date_day < "2018-05-06")
+
+t_cri9_2 <- t.test(case9_cri_bf_2y$cri_ro, case9_cri_af_2y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri9_2
+
+# T-test 3 year
+case9_cri_bf_3y <- main_ro %>% filter(date_day < case9_date & date_day > "2013-05-06")
+case9_cri_af_3y <- main_ro %>% filter(date_day > case9_date & date_day < "2019-05-06")
+
+t_cri9_3 <- t.test(case9_cri_bf_3y$cri_ro, case9_cri_af_3y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri9_3
+
+#----------------------
+#CITY NR 10: RESITA
+#----------------------
+
+case10_date <- as.POSIXct(paste(enforcement_ro_collapsed[95,2]))
+case10_city_name <- as.character(paste(enforcement_ro_collapsed[95,1]))
+
+# Creating a subset with contracts only in the studied city 
+case10_procur <- main_ro %>% filter(buyer_city_original == case10_city_name)
+
+# T-test all 
+case10_cri_bf <- case10_procur %>% filter(date_day < case10_date)
+case10_cri_af <- case10_procur %>% filter(date_day > case10_date)
+
+t_cri10<-t.test(case10_cri_bf$cri_ro, case10_cri_af$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri10
+
+# T-test 1 year
+case10_cri_bf_1y <- main_ro %>% filter(date_day < case10_date & date_day > "2014-12-11")
+case10_cri_af_1y <- main_ro %>% filter(date_day > case10_date & date_day < "2016-12-11")
+
+t_cri10_1 <- t.test(case10_cri_bf_1y$cri_ro, case10_cri_af_1y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri10_1
+
+# T-test 2 year
+case10_cri_bf_2y <- main_ro %>% filter(date_day < case10_date & date_day > "2013-12-11")
+case10_cri_af_2y <- main_ro %>% filter(date_day > case10_date & date_day < "2017-12-11")
+
+t_cri10_2 <- t.test(case10_cri_bf_2y$cri_ro, case10_cri_af_2y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri10_2
+
+# T-test 3 year
+case10_cri_bf_3y <- main_ro %>% filter(date_day < case10_date & date_day > "2012-12-11")
+case10_cri_af_3y <- main_ro %>% filter(date_day > case10_date & date_day < "2018-12-11")
+
+t_cri10_3 <- t.test(case10_cri_bf_3y$cri_ro, case10_cri_af_3y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri10_3
+
+#
+# T-TESTS ALL CRI_RO DATA
+#
+
+# 1 YEAR T-Test
+
+ncri_bf_1y <- rbind(case1_cri_bf_1y, case2_cri_bf_1y, case3_cri_bf_1y, case4_cri_bf_1y, case5_cri_bf_1y, case6_cri_bf_1y, case7_cri_bf_1y, case8_cri_bf_1y, case9_cri_bf_1y, case10_cri_bf_1y)
+ncri_af_1y <- rbind(case1_cri_af_1y, case2_cri_af_1y, case3_cri_af_1y, case4_cri_af_1y, case5_cri_af_1y, case6_cri_af_1y, case7_cri_af_1y, case8_cri_af_1y, case9_cri_af_1y, case10_cri_af_1y)
+
+t_cri_1y <- t.test(ncri_bf_1y$cri_ro, ncri_af_1y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri_1y
+
+# 2 YEAR T-test
+
+ncri_bf_2y <- rbind(case1_cri_bf_2y, case2_cri_bf_2y, case3_cri_bf_2y, case4_cri_bf_2y, case5_cri_bf_2y, case6_cri_bf_2y, case7_cri_bf_2y, case8_cri_bf_2y, case9_cri_bf_2y, case10_cri_bf_2y)
+ncri_af_2y <- rbind(case1_cri_af_2y, case2_cri_af_2y, case3_cri_af_2y, case4_cri_af_2y, case5_cri_af_2y, case6_cri_af_2y, case7_cri_af_2y, case8_cri_af_2y, case9_cri_af_2y, case10_cri_af_2y)
+
+t_cri_2y <- t.test(ncri_bf_2y$cri_ro, ncri_af_2y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri_2y
+
+# 3 YEAR T-test
+
+ncri_bf_3y <- rbind(case1_cri_bf_3y, case2_cri_bf_3y, case3_cri_bf_3y, case4_cri_bf_3y, case5_cri_bf_3y, case6_cri_bf_3y, case7_cri_bf_3y, case8_cri_bf_3y, case9_cri_bf_3y, case10_cri_bf_3y)
+ncri_af_3y <- rbind(case1_cri_af_3y, case2_cri_af_3y, case3_cri_af_3y, case4_cri_af_3y, case5_cri_af_3y, case6_cri_af_3y, case7_cri_af_3y, case8_cri_af_3y, case9_cri_af_3y, case10_cri_af_3y)
+
+t_cri_3y <- t.test(ncri_bf_3y$cri_ro, ncri_af_3y$cri_ro, paired = FALSE, conf.level = 0.95)
+t_cri_3y
+
+
+# Table of CRI T-test
+
+tab <- map_df(list(t_cri_1y, t_cri_2y, t_cri_3y), tidy)
+tab[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+
+# REGRESSIONS
+# Preparing for regressions (ro_new needs to be run to create the variables used in the regression)
+
+reg_cri_3y <- rbind(case1_s1_3y, case2_s1_3y, case3_s1_3y, case4_s1_3y, case5_s1_3y,
+                    case6_s1_3y, case7_s1_3y, case8_s1_3y,case9_s1_3y,case10_s1_3y)
+
+reg_cri_2y <- rbind(case1_s1_2y, case2_s1_2y, case3_s1_2y, case4_s1_2y, case5_s1_2y,
+                    case6_s1_2y, case7_s1_2y, case8_s1_2y,case9_s1_2y,case10_s1_2y)
+  
+reg_cri_1y <- rbind(case1_s1_1y, case2_s1_1y, case3_s1_1y, case4_s1_1y, case5_s1_1y,
+                    case6_s1_1y, case7_s1_1y, case8_s1_1y,case9_s1_1y,case10_s1_1y)
+
+reg_cri_3y$log_price <- log(reg_cri_3y$tender_finalprice)
+reg_cri_3y <- reg_cri_3y %>% filter(!is.na(log_price))
+
+reg_cri_2y$log_price <- log(reg_cri_2y$tender_finalprice)
+reg_cri_2y <- reg_cri_2y %>% filter(!is.na(log_price))
+
+reg_cri_1y$log_price <- log(reg_cri_1y$tender_finalprice)
+reg_cri_1y <- reg_cri_1y %>% filter(!is.na(log_price))
+  
+# 1 Year regression
+m1_cri_logit <- glm(cri_ro ~ date_day + contractmonth + contractyear + log_price + buyer_buyertype, family = "binomial", data = reg_cri_1y)
+summary(m1_cri_logit)
+
+m1_cri_ols <- lm(cri_ro ~ date_day + contractmonth + contractyear + log_price + buyer_buyertype, data = reg_cri_1y)
+summary.lm(m1_cri_ols)
+
+# 2 Year regression
+m2_cri_logit <- glm(cri_ro ~ date_day + contractmonth + contractyear + log_price + buyer_buyertype, family = "binomial", data = reg_cri_2y)
+summary(m2_cri_logit)
+
+m2_cri_ols <- lm(cri_ro ~ date_day + contractmonth + contractyear + log_price + buyer_buyertype, data = reg_cri_2y)
+summary.lm(m2_cri_ols)
+
+# 3 Year regression
+m3_cri_logit <- glm(cri_ro ~ date_day + contractmonth + contractyear + log_price + buyer_buyertype, family = "binomial", data = reg_cri_3y)
+summary(m3_cri_logit)
+
+m3_cri_ols <- lm(cri_ro ~ date_day + contractmonth + contractyear + log_price + buyer_buyertype, data = reg_cri_3y)
+summary.lm(m3_cri_ols)
+
+stargazer(m1_cri_ols, m2_cri_ols, m3_cri_ols,  
+          title="Results Corruption Rrisk Indicator", 
+          align = TRUE,
+          single.row=TRUE,
+          column.sep.width = "1pt",
+          font.size = "small")
+
+stargazer(m1_cri_logit, m2_cri_logit, m3_cri_logit,  
+          title="Results Corruption Rrisk Indicator", 
+          align = TRUE,
+          single.row=TRUE,
+          column.sep.width = "1pt",
+          font.size = "small")
+
