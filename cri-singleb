@@ -257,31 +257,7 @@ model_cri=lm(cri_ro ~ municipality+
 d<-density(model_cri[['residuals']])
 plot(d,main='Residual KDE Plot',xlab='Residual value')
 summary(model_cri)
-#Summary of a model tells you which variable is sgnificantly explaining the explained variable
-#Here cri_ro. Estimate is the beta coefficients in the regression and Std error it's standard error
-# You can have several informations to interpret from estimates :
-#For continuous, numeric variable  
-  # Negative or positive ? A positive estimate means that this variable is higher for higher cri_ro
-  # The value ? The close it is from 0 the less influence this variable is.
-  # You can compare value of estimate between variable to see which is the most important
-#For categorical value 
-  # Since there is only categories it is complicate to think of some kind of center of value
-  # So the function takes the first category (often the first in alphabetical order) as reference
-  # And then it compare if each other category is significantly different from this first one
-  # This is why you have a lot of line for categorical variable
-  # For example municipalityArad is a comparison between Arad and the first one (Alexandria)
-  # So You won't find municipalityAlexandria in the summary
-  # If a categorical variable seems to give interesting value, you could still do matching
-  # Pairwise test to see which group is different from which other
-  # Just in case, it is possible to set a specific group (for instance a specific municipality)
-  # as reference
-  # The value and negative interpretation of estimate is similar as continuous variable
 tab_model(model_cri)# Write a nice summary in html
-
-
-
-
-
 
 ## Model singleb regression ---------------------------
 model_singleb=glm(singlebid ~ municipality+
@@ -416,10 +392,6 @@ for (i in colnames(main_ro)[-which(colnames(main_ro)%in%"singleb")]) {
 }
 #Feel free to add simple function ask like for example political party and single b
 prop_table(main_ro_political,"political_party","singleb") 
-
-#WARNING Keep in mind that it is contingency table. It counts the number of rows of the dataframe
-# Sometimes it is not easily interpretable because you may want more grouping. 
-# Play with whatever you imagine
 
 ##Contingency for 3 variables-------------------------
 #Here is an example if you want to see how much raws are in a combination of three variables
