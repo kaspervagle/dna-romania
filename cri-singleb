@@ -1,3 +1,6 @@
+# Env setup ---------------------------------------------------------------
+# In this part we load all packages and set the right working directory
+
 library(easypackages)#If easypackages is not install you can get it from :
 #devtools::install_github("jakesherman/packages")
 #If devtools is not install :
@@ -5,12 +8,14 @@ library(easypackages)#If easypackages is not install you can get it from :
 packages("dplyr", "dplyr","rstatix", "data.table", "readxl", "readr", "stringr",
          "stringi", "openxlsx", "tidyr", "zoo", "ggplot2", "forcats",
          "vroom", "foreign", "haven", "tidyverse", "purrr", "broom",
-         "modEvA", "stargazer","nlme","sjPlot","sjmisc","sjlabelled")
+         "modEvA", "stargazer","nlme","sjPlot","sjmisc","sjlabelled", "cem", "gridExtra")
+
 
 
 Sys.setenv(TZ = "GMT")
 memory.limit(size = 30000)
 gc()
+#setwd("~/ownCloud/freelance/corruption")
 setwd("C:/Users/s13476/OneDrive - Norges Handelshøyskole/My papers/Paper 3/Data/") 
 
 # Load and process Data ----------------------------------------
@@ -97,7 +102,6 @@ main_ro<- main_ro %>% filter(!is.na(cri_ro))
 #Dummy for treated municipalities 
 treated_cities <- enforcement_ro_collapsed$municipality
 
-
 ##Extracting months and years for the procurement contracts
 main_ro$contractyear<- ifelse(is.na(main_ro$tender_publications_firstdcontra), substring(main_ro$tender_publications_firstdcontra,1,4),substring(main_ro$tender_publications_firstdcontra,1,4)) #Contract year
 main_ro$contractmonth <- ifelse(is.na(main_ro$tender_publications_firstdcontra), substring(main_ro$tender_publications_firstdcontra,6,7),substring(main_ro$tender_publications_firstdcontra,6,7)) #Contract month
@@ -122,7 +126,7 @@ main_ro=merge(x = main_ro,y = enforcement_ro_collapsed,by = "municipality")#Comb
 ## Calculate different variables--------------------------------
 
 main_ro=main_ro%>%ungroup()%>%# Mutate add a new column
-        mutate(number_of_corrupted_at_this_time=case_when(#A variable to know how much enforcement were already done at the date_day
+        mutate(number_of_corrupted_at_this_time=case_when(#A variable to know how many enforcement cases were already done at the date_day
                 date_day> case6~6,# For each row case_when looks at the first case and if the condition
                 date_day> case5~5,# is not satisfied, it looks at the second case and so on
                 date_day> case4~4,# If no case was satisfied, then it fills with NA
@@ -213,16 +217,14 @@ p=ggplot(main_ro%>%filter(!is.na(number_of_corrupted_at_this_time))
 ggsave(plot = p,filename = "number_of_corrupted.png",width = 10,height = 8)
 
 
-
-
 # Statistical analysis ------------------------------------
 library(corrplot)
 #as numeric few variable
 main_ro$number_of_corrupted_region=as.numeric(main_ro$number_of_corrupted_region)
 main_ro$time_from_first_corrupted=as.numeric(main_ro$time_from_first_corrupted)
 main_ro$time_from_last_corrupted=as.numeric(main_ro$time_from_last_corrupted)
-#Check correlations of variables. If we add correlated variable to a model,
-#estimates of these variable will be affected
+#Check correlations of variables. Adding correlated variable to a model,
+#will affect the estimate
 correlations <- cor(main_ro%>%select(contractyear,
                                      contractmonth,
                                      lot_bidscount,
@@ -232,6 +234,7 @@ correlations <- cor(main_ro%>%select(contractyear,
                                      log_price,
                                      number_of_corrupted_region
                                      ))
+#stargazer(correlations)
 #Contractyear is highly correlated to number_of_corrupted_at_this_time and number_of_corrupted_region
 # So we will just add contractyear as an interaction of these two
 ## Linear model for CRI------------------------------------------
@@ -249,15 +252,35 @@ model_cri=lm(cri_ro ~ municipality+
                number_of_corrupted_region+
                number_of_corrupted_at_this_time,
              data =main_ro)
-#plot(model_cri) to check hypothesis
+plot(model_cri) #to check hypothesis
 #Check assumption on residuals. We would like to have a gaussian.
 # Residuals plot does not look perfect. I tried to transform cri_ro to get better results
 # But it did not help much. So we may still use this model, thinking that we have a lot 
-# of observations that shall help to mitigate the effect of uggly residuals
+# of observations that shall help to mitigate the effect of ugly residuals
 d<-density(model_cri[['residuals']])
 plot(d,main='Residual KDE Plot',xlab='Residual value')
 summary(model_cri)
+#Summary of a model tells you which variable is significantly explaining the explained variable
+#Here cri_ro. Estimate is the beta coefficients in the regression and Std error it's standard error
+# You can have several information to interpret from estimates :
+#For continuous, numeric variable  
+  # Negative or positive ? A positive estimate means that this variable is higher for higher cri_ro
+  # The value ? The close it is from 0 the less influence this variable is.
+  # You can compare value of estimate between variable to see which is the most important
+#For categorical value 
+  # Since there is only categories it is complicate to think of some kind of center of value
+  # So the function takes the first category (often the first in alphabetical order) as reference
+  # And then it compare if each other category is significantly different from this first one
+  # This is why you have a lot of line for categorical variable
+  # For example municipalityArad is a comparison between Arad and the first one (Alexandria)
+  # So You won't find municipalityAlexandria in the summary
+  # If a categorical variable seems to give interesting value, you could still do matching
+  # Pairwise test to see which group is different from which other
+  # Just in case, it is possible to set a specific group (for instance a specific municipality)
+  # as reference
+  # The value and negative interpretation of estimate is similar as continuous variable
 tab_model(model_cri)# Write a nice summary in html
+stargazer(model_cri, type='html')
 
 ## Model singleb regression ---------------------------
 model_singleb=glm(singlebid ~ municipality+
@@ -271,6 +294,7 @@ model_singleb=glm(singlebid ~ municipality+
                     number_of_corrupted_at_this_time,
                   data =main_ro,family = "binomial")#Binomial regression
 summary(model_singleb)
+stargazer(model_singleb, type = "html")
 #Interpretation is the almost the same as linear model
 # cf http://environmentalcomputing.net/interpreting-coefficients-in-glms/
 #As the estimates increases so do the odds of getting 1
@@ -314,7 +338,7 @@ plot(d,main='Residual KDE Plot',xlab='Residual value')
 # as interesting interpretation
 tab_model(model_cri)
 summary(model_cri)
-
+stargazer(model_cri, type = "html")
 
 ##Model singleb regression taking into account political party---------------------------
 model_singleb=glm(singlebid ~ #Also removed the municipality and number of bidding. just in case
@@ -330,6 +354,7 @@ model_singleb=glm(singlebid ~ #Also removed the municipality and number of biddi
                   data =main_ro_political,family = "binomial")
 summary(model_singleb)
 tab_model(model_singleb)
+stargazer(model_singleb, type = "html")
 
 #CEM and matching ----------------------------------------------------------
 ##Tukey test---------------------------------------
@@ -337,11 +362,16 @@ tab_model(model_singleb)
 stat=main_ro%>%filter(number_of_corrupted_at_this_time<2)%>%
   group_by(municipality)%>%
   tukey_hsd(cri_ro~as.factor(number_of_corrupted_at_this_time))
+view(stat)
 
+png("tukey.png", height=1000, width=3000)
+p<-tableGrob(stat)
+grid.arrange(p)
+dev.off()
 
 #Matching of singlebind 
 main_ro_matching=main_ro%>%filter(number_of_corrupted_at_this_time<2)
-main_ro_matching=main_ro_matching%>%select(contractmonth,municipality,log_price,singlebid,buyer_buyertype,number_of_corrupted_at_this_time)
+main_ro_matching=main_ro_matching%>%select(contractmonth,cri_ro,municipality,log_price,singlebid,buyer_buyertype,number_of_corrupted_at_this_time)
 main_ro_matching<- data.frame(na.omit(main_ro_matching))
 
 imbalance(group=main_ro_matching$singlebid, data=main_ro_matching%>%select(contractmonth,log_price))
@@ -351,7 +381,7 @@ valuecuts1_0 = c(12.01,   12.95,14.02)
 #Variable grouping
 buyer_buyerType.grp<-list(c("REGIONAL_AUTHORITY", "REGIONAL_AGENCY", "UTILITIES"),c("EUROPEAN_AGENCY" ), c("NATIONAL_AUTHORITY"),c("OTHER"), c("PUBLIC_BODY"), c("NA",NA))
 #Comput the coarsened exact matching
-mat1_0 <- cem(treatment = "number_of_corrupted_at_this_time",drop = "singlebid", grouping = list(buyer_buyertype= buyer_buyerType.grp),cutpoints = list(log_price=valuecuts1_0,contractmonth=valuecuts1_1), eval.imbalance = F,data = main_ro_matching)
+mat1_0 <- cem(treatment = "number_of_corrupted_at_this_time",drop = "singlebid", grouping = list(buyer_buyertype= buyer_buyerType.grp),cutpoints = list(log_price=valuecuts1_0), eval.imbalance = F,data = main_ro_matching)
 est1_0 <- att(mat1_0,singlebid~ number_of_corrupted_at_this_time, data =main_ro_matching)
 main_ro_matching$aftermatchtreat <- mat1_0$matched
 main_ro_matching$aftermatchweight <- mat1_0$w
@@ -367,7 +397,11 @@ matrix_matching=as.matrix(main_ro_matching_final%>%
   spread(singlebid,n))[,-1]#Create the contingency matrix for singlebid against before after first enforcement
 fisher.test(matrix_matching,alternative = "two.sided")#Fisher exact test to test if there is a difference
 
-
+##Tukey test---------------------------------------
+#Matching test of before and after the first corruption enforcement
+stat=main_ro_matching_final%>%
+  group_by(municipality)%>%
+  tukey_hsd(cri_ro~as.factor(number_of_corrupted_at_this_time))
 
 
 #Contingency table------------------
@@ -392,6 +426,10 @@ for (i in colnames(main_ro)[-which(colnames(main_ro)%in%"singleb")]) {
 }
 #Feel free to add simple function ask like for example political party and single b
 prop_table(main_ro_political,"political_party","singleb") 
+
+#WARNING Keep in mind that it is contingency table. It counts the number of rows of the dataframe
+# Sometimes it is not easily interpretable because you may want more grouping. 
+# Play with whatever you imagine
 
 ##Contingency for 3 variables-------------------------
 #Here is an example if you want to see how much raws are in a combination of three variables
