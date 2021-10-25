@@ -5,10 +5,10 @@ library(easypackages)#If easypackages is not install you can get it from :
 #devtools::install_github("jakesherman/packages")
 #If devtools is not install :
 #install. packages("devtools")
-packages("dplyr", "dplyr","rstatix", "data.table", "readxl", "readr", "stringr",
+packages("dplyr","foreach" ,"dplyr","rstatix", "data.table", "readxl", "readr", "stringr",
          "stringi", "openxlsx", "tidyr", "zoo", "ggplot2", "forcats","corrplot",
          "vroom", "foreign", "haven", "tidyverse", "purrr", "broom",
-         "modEvA", "stargazer","nlme","sjPlot","sjmisc","sjlabelled", "cem", "gridExtra", "foreach")
+         "modEvA", "stargazer","nlme","sjPlot","sjmisc","sjlabelled", "cem", "gridExtra")
 
 `%between%` = function(x,range) x>range[1] & x<range[2]#A nice function for interval
 
@@ -91,10 +91,8 @@ main_ro$tender_publications_firstdcontra <-as.POSIXct(main_ro$tender_publication
 procurment_start <- as.POSIXct("2009-01-01")
 procurment_end <- as.POSIXct("2019-12-31")
 enforcement_ro_edited <- enforcement_ro_edited %>% filter(date_of_indictment>=procurment_start)
-enforcement_ro_edited <- enforcement_ro_edited %>% filter(date_of_indictment<=procurment_end)
 
 #filer cases before 2009 and after 2019 (we do not want entries influenced by corona)
-main_ro <- main_ro %>% filter(tender_publications_firstdcontra > procurment_start)
 main_ro <- main_ro %>% filter(tender_publications_firstdcontra < procurment_end)
 
 #Collapse the enforcement data, so that each municipality only occur once (one municipality per row) and cases appear in
@@ -108,6 +106,9 @@ enforcement_ro_collapsed=enforcement_ro_edited%>%  #This is a better code that c
 #   group_by_at(vars(municipality)) %>%
 #   summarize_all(paste, collapse=",") %>%
 #   separate(col= "date_of_indictment", into= c("case1","case2","case3","case4","case5","case6"), sep = ",")
+
+#Overview of all the cities that the data set contains. 
+procuring_cities <- distinct(main_ro,buyer_city_original, .keep_all=TRUE)
 
 
 ##Removing Missing CRI_RO
@@ -138,6 +139,7 @@ main_ro=main_ro%>%filter(buyer_postcode!="000000")
 #Get the two first digit of postcode to have the state number
 main_ro$region=substr(main_ro$buyer_postcode,start = 1,stop = 2)
 
+
 #Fixing cities with multiple names
 main_ro$buyer_city_original <- as.character(main_ro$buyer_city_original)
 main_ro$buyer_city_original[main_ro$buyer_city_original == "Iasi (Iasi)"] <- "Iasi"
@@ -150,7 +152,7 @@ main_ro$buyer_city_original[main_ro$buyer_city_original == "Rosiori de Vede"] <-
 main_ro$buyer_city_original[main_ro$buyer_city_original == "Sebe?, Lancram"] <- "Sebes, Lancram"
 main_ro$buyer_city_original[main_ro$buyer_city_original == "suplacul d ebarcau"] <- "suplacu de barcau"
 
-#Fixing city names in main_ro
+#Fixing city namesin main_ro
 main_ro$buyer_city_original=main_ro$buyer_city_original%>%
   tolower()%>%#to lower case
   str_remove_all(pattern = "comuna")%>%#Remove "comuna"
@@ -158,6 +160,8 @@ main_ro$buyer_city_original=main_ro$buyer_city_original%>%
           str_replace_all(pattern = "-",replacement = " ")%>%
           str_replace_all(pattern = "-",replacement = " ")%>%#replace dashes by whitespace
           str_replace_all(pattern = "\\s+",replacement = " ")#replace multiple whitespace by only one
+
+          
 
 main_ro=main_ro%>%rename(municipality=buyer_city_original)#Rename municipalities
 main_ro=merge(x = main_ro,y = enforcement_ro_collapsed,by.x =  "municipality")#Combine to add date of enforcement case to main_ro. It merge all columns based on the by= 
@@ -177,13 +181,11 @@ count <- count %>% filter(count$Freq>300)
 main_ro=main_ro%>%ungroup()%>%distinct()#Remove duplicate. There was some!
 main_ro=main_ro%>%group_by(municipality)%>%filter(n()>300)#Remove municipalities with less than 300 contracts
 
-#Overview of all the cities that the data set contains. 
-procuring_cities <- distinct(main_ro,municipality, .keep_all=TRUE)
 
 ## Calculate different variables--------------------------------
 
 main_ro=main_ro%>%ungroup()%>%# Mutate add a new column
-        mutate(corrupt_dummy=case_when(#A variable to know how many enforcement cases were already done at the date_day
+        mutate(corrupt_dummy=case_when(#A dummy indicating before and after the corruption case. 0 before, 1 after)
                 # For each row case_when looks at the first case and if the condition
                 # is not satisfied, it looks at the second case and so on
                 # If no case was satisfied, then it fills with NA
@@ -288,6 +290,7 @@ total_stat=total_stat%>%adjust_pvalue()
 
 
 ##T.test for singleb before and after at a year scale--------------------------------------
+# This is not totally legit statistically
 dfsinglebid=main_ro%>%
   group_by(weeks_from_corrupted,municipality,singleb)%>%
   tally()%>%#Count singleb by weeks by municipality
@@ -296,7 +299,7 @@ dfsinglebid=main_ro%>%
   rename(not_single_bidded="0",single_bidded="1")%>%rowwise()%>%#Rename to make it clearer
   mutate(sample_size=sum(not_single_bidded+single_bidded,na.rm = T),#Get sample size for each week each municipality
          ratio_singleb=single_bidded/sample_size)%>%# Calculate the ratio of single bid contracts
-  filter(sample_size>15)%>%# Filter weeks (by municipalities) that have less than 15 contracts. Hard to do a correct ratio with low sample size
+  filter(sample_size>10)%>%# Filter weeks (by municipalities) that have less than 15 contracts. Hard to do a correct ratio with low sample size
   mutate(years_apart_corrupt=floor(weeks_from_corrupted/52))#Compute a column for the year from enforcement
 #For each municipality (don't work not enough observations)
 stat=dfsinglebid%>%filter(years_apart_corrupt %between% c(-3,3) )%>%# Keep only relevant contracts
@@ -332,7 +335,7 @@ result_stat = foreach(i=unique(municipalities_to_use),.combine=rbind)%do%{
   xtab <- as.table( as.matrix(matrix_matching)[,-1])#Reformat the dataframe
   dimnames(xtab) <- list(
     singlebid = c("0", "1"),
-    Class = c("years-1","years-2","years-3","years1","years2","years3")
+    Class = c("years-1","years-2","years-3","years1","years2","years3" )
   )
   #Perform the pairwise fisher test for each pairwise year
 temp= xtab%>%pairwise_fisher_test(alternative="two.sided")%>%filter(
@@ -353,20 +356,20 @@ dimnames(xtab) <- list(
   Class = c("years-1","years-2","years-3","years1","years2","years3" )
 )
 # Perform the fisher test to city merge dataset
-result_stat2=xtab%>%pairwise_fisher_test(alternative="two.sided")%>%filter(
+result_stat2=xtab%>%pairwise_fisher_test(alternative="two-sided")%>%filter(
   (group1=="years-1"&group2=="years1")|(group1=="years-2"&group2=="years2")|(group1=="years-3"&group2=="years3"))
 result_stat2$municipality="All"# Add an identification name
 #Merge both test datasets and adjust p-value
-result_stat3=rbind.data.frame(result_stat,result_stat2)%>%adjust_pvalue()
+result_stat3=rbind.data.frame(result_stat2,result_stat)%>%adjust_pvalue()
 #RESULTS of test are in result_stat3
 
 #Statistical analysis (CEM and matching) ----------------------------------------------------------
 
-#Matching of singlebid 
-main_ro_matching=main_ro%>%select(contractmonth,cri_ro,municipality,log_price,singlebid,buyer_buyertype,corrupt_dummy)
+#Matching of the treated group of contracts with the non-treated group, creating a control group. 
+main_ro_matching=main_ro%>%select(contractmonth,cri_ro,tender_cpvs,municipality,log_price,singlebid,buyer_buyertype,corrupt_dummy)
 main_ro_matching<- data.frame(na.omit(main_ro_matching))
 
-imbalance(group=main_ro_matching$singlebid, data=main_ro_matching%>%select(contractmonth,log_price))
+imbalance(group=main_ro_matching$singlebid, data=main_ro_matching%>%select(contractmonth,log_price,tender_cpvs))
 summary(main_ro_matching$log_price)
 #Value cuts based on quartile
 valuecuts1_0 = c(12.01,   12.95,14.02)
@@ -411,24 +414,41 @@ matrix_matching=as.matrix(main_ro_matching_final%>%
                             tally()%>%
                             spread(singlebid,n))[,-1]#Create the contingency matrix for singlebid against before after first enforcement
 fisher.test(matrix_matching,alternative = "two.sided")#Fisher exact test to test if there is a difference
-#p-value = 7.16e-05
 
 
-##T.test cri_ro for corrupt_dummy---------------------------------------
+# T-test for singlebid and cri before and after corruption matched 
+match_pre <- main_ro_matching %>% filter(corrupt_dummy == 0)
+match_post <- main_ro_matching %>% filter(corrupt_dummy == 1)
+
+matched_comp_cri <- t.test(match_pre$cri_ro, match_post$cri_ro, paired = FALSE, conf.level =0.95)
+matched_comp_cri
+matched_comp_singleb <- t.test(match_pre$singlebid, match_post$singlebid, paired = FALSE, conf.level =0.95)
+matched_comp_singleb
+
+tab<-map_df(list(matched_comp_cri,matched_comp_singleb), tidy)
+tab[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+
+##T.test cri_ro and singlebid for corrupt_dummy---------------------------------------
 #Matching test of before and after the first corruption enforcement
 contingency=main_ro_matching_final%>%
   group_by(municipality,corrupt_dummy)%>%
   tally()%>%spread(corrupt_dummy,n)#A contingency table to check how many contract we have before and after
 
+# For singlebid
 stat=main_ro%>%
   group_by(municipality)%>%
-  t_test(cri_ro~corrupt_dummy)
+  t_test(singlebid~corrupt_dummy)
 #RESULTS are in stat
 png("t_test_cri_ro_corrupt_dummy.png", height=1000, width=3000)
 p<-tableGrob(stat)
 grid.arrange(p)
 dev.off()
 
+# For cri_ro
+stat=main_ro%>%
+  group_by(municipality)%>%
+  t_test(cri_ro~corrupt_dummy)
+#RESULTS are in stat
 
 #Statistical analysis (Regression) --------------------------------------------------------------
 #as numeric few variable
@@ -471,15 +491,15 @@ correlations <- cor(main_ro%>%select(contractyear,
 model_cri=lm(cri_ro ~ 
                #municipality+ Removed using step model
                buyer_buyertype+
-               buyer_postcode+
-               contractmonth +
-               tender_cpvs+
-               bidder_nuts2+
-               contractyear*time_from_corrupted +
+               #buyer_postcode+
+               #contractmonth +
+               #tender_cpvs+
+               #bidder_nuts2+
+               #contractyear*time_from_corrupted +
                contractyear*number_of_corrupted_region+
                log_price+
-               time_from_corrupted+
-               # corrupt_dummy+ #Removed using step model
+               #time_from_corrupted+
+               corrupt_dummy+ #Removed using step model
                number_of_corrupted_region ,
              data =main_ro)
 #plot(model_cri) #to check hypothesis
@@ -492,7 +512,7 @@ plot(d,main='Residual KDE Plot',xlab='Residual value')
 summary(model_cri)
 
 tab_model(model_cri)# Write a nice summary in html
-stargazer(model_cri, type='html')
+#stargazer(model_cri, type='html')
 
 ## Model singleb regression ---------------------------
 #Stepwise model
@@ -520,21 +540,22 @@ stargazer(model_cri, type='html')
 ##################
 model_singleb=glm(singlebid ~ 
                    # municipality+
-                    buyer_buyertype+
-                    buyer_postcode+
-                    contractmonth +
-                    contractyear*time_from_corrupted +
-                    contractyear*number_of_corrupted_region+
+                    #buyer_buyertype+
+                    #buyer_postcode+
+                    #contractmonth +
+                    #contractyear*time_from_corrupted +
+                    #contractyear*number_of_corrupted_region+
                     log_price+
-                    number_of_corrupted_region+
-                    #corrupt_dummy+
-                    time_from_corrupted,
+                    #number_of_corrupted_region+
+                    corrupt_dummy+
+                    time_from_corrupted, df_method="wald",
                   data =main_ro,family = "binomial")#Binomial regression
 
 
 summary(model_singleb)
 tab_model(model_singleb)# Write a nice summary in html
-stargazer(model_singleb, type = "html")
+RsqGLM(model_singleb)
+#stargazer(model_singleb, type = "html")
 #Interpretation is the almost the same as linear model
 # cf http://environmentalcomputing.net/interpreting-coefficients-in-glms/
 #As the estimates increases so do the odds of getting 1
@@ -579,12 +600,12 @@ main_ro_political=main_ro_political%>%filter(!is.na(political_party))
 # Residual were not good on this model, so I did a log transform
 model_cri=lm(log(cri_ro+0.00001) ~ #I remove municipality because I had not enough ranking and it may be colinear to political party I think
                political_party+#political party was not selected in the step model but since it is what we want to look at we can keep it
-               buyer_buyertype+
-               buyer_postcode+
-               contractmonth +
-               bidder_nuts2+
-               contractyear*time_from_corrupted +
-               contractyear*number_of_corrupted_region+
+               #buyer_buyertype+
+               #buyer_postcode+
+               #contractmonth +
+               #bidder_nuts2+
+               #contractyear*time_from_corrupted +
+               #contractyear*number_of_corrupted_region+
                log_price+
                time_from_corrupted+
                corrupt_dummy,
@@ -597,7 +618,7 @@ plot(d,main='Residual KDE Plot',xlab='Residual value')
 # as interesting interpretation
 tab_model(model_cri)
 summary(model_cri)
-stargazer(model_cri, type = "html")
+#stargazer(model_cri, type = "html")
 
 ###Model singleb regression taking into account political party---------------------------
 #stepwise
