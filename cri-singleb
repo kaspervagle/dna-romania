@@ -58,7 +58,7 @@ main_ro <- main_ro %>% filter(!is.na(date_day))
 main_ro <- main_ro %>% filter(tender_finalprice > 26000)
 
 #Filter out contracts from national institutions 
-main_ro=main_ro%>%filter(!buyer_buyertype%in%c("NATIONAL_AUTHORITY","EUROPEAN_AGENCY"))
+main_ro=main_ro%>%filter(!buyer_buyertype%in%c("NATIONAL_AUTHORITY","EUROPEAN_AGENCY", "NATIONAL_AGENCY"))
 
 #Make all variable names in the enforcement data lower case
 names(enforcement_ro) <- tolower(names(enforcement_ro))
@@ -75,17 +75,16 @@ enforcement_ro$municipality=enforcement_ro$municipality%>%
   str_replace_all(pattern = "-",replacement = " ")%>%#replace dashes by whitespace
   str_replace_all(pattern = "\\s+",replacement = " ")#replace multiple whitespace by only one
 
+#Defining dates.
+enforcement_ro$date_of_definitive_sentencing <- as.POSIXct(enforcement_ro$date_of_definitive_sentencing, format='%Y/%m/%d') 
+enforcement_ro$date_of_indictment <- as.POSIXct(enforcement_ro$date_of_indictment, format='%Y/%m/%d')  
+main_ro$tender_publications_firstdcontra <-as.POSIXct(main_ro$tender_publications_firstdcontra, format='%Y/%m/%d')
 
 #Delete rows that correspond to the same case, so that one corruption case only occur once.
 enforcement_ro <- distinct(enforcement_ro,nr_of_penal_decision, .keep_all=TRUE)
 enforcement_ro_edited<-enforcement_ro
 #keeps <- c("nr_of_penal_decision","municipality", "zip_code", "date_of_definitive_sentencing", "date_of_indictment")
 enforcement_ro_edited<-enforcement_ro_edited%>%select(municipality,date_of_indictment)
-
-#Defining dates.
-enforcement_ro$date_of_definitive_sentencing <- as.POSIXct(enforcement_ro$date_of_definitive_sentencing, format='%Y/%m/%d') 
-enforcement_ro$date_of_indictment <- as.POSIXct(enforcement_ro$date_of_indictment, format='%Y/%m/%d')  
-main_ro$tender_publications_firstdcontra <-as.POSIXct(main_ro$tender_publications_firstdcontra, format='%Y/%m/%d')
 
 #filter out corruption cases that happened before the 2009 (before we have procurement data)
 procurment_start <- as.POSIXct("2009-01-01")
@@ -106,10 +105,6 @@ enforcement_ro_collapsed=enforcement_ro_edited%>%  #This is a better code that c
 #   group_by_at(vars(municipality)) %>%
 #   summarize_all(paste, collapse=",") %>%
 #   separate(col= "date_of_indictment", into= c("case1","case2","case3","case4","case5","case6"), sep = ",")
-
-#Overview of all the cities that the data set contains. 
-procuring_cities <- distinct(main_ro,buyer_city_original, .keep_all=TRUE)
-
 
 ##Removing Missing CRI_RO
 main_ro<- main_ro %>% filter(!is.na(cri_ro))
@@ -152,7 +147,7 @@ main_ro$buyer_city_original[main_ro$buyer_city_original == "Rosiori de Vede"] <-
 main_ro$buyer_city_original[main_ro$buyer_city_original == "Sebe?, Lancram"] <- "Sebes, Lancram"
 main_ro$buyer_city_original[main_ro$buyer_city_original == "suplacul d ebarcau"] <- "suplacu de barcau"
 
-#Fixing city namesin main_ro
+#Fixing city names in main_ro
 main_ro$buyer_city_original=main_ro$buyer_city_original%>%
   tolower()%>%#to lower case
   str_remove_all(pattern = "comuna")%>%#Remove "comuna"
@@ -161,7 +156,8 @@ main_ro$buyer_city_original=main_ro$buyer_city_original%>%
           str_replace_all(pattern = "-",replacement = " ")%>%#replace dashes by whitespace
           str_replace_all(pattern = "\\s+",replacement = " ")#replace multiple whitespace by only one
 
-          
+#Overview of all the cities that the data set contains. 
+procuring_cities <- distinct(main_ro,buyer_city_original, .keep_all=TRUE)          
 
 main_ro=main_ro%>%rename(municipality=buyer_city_original)#Rename municipalities
 main_ro=merge(x = main_ro,y = enforcement_ro_collapsed,by.x =  "municipality")#Combine to add date of enforcement case to main_ro. It merge all columns based on the by= 
@@ -177,10 +173,13 @@ count <- as.data.frame(table(main_ro$municipality))
 count <- count %>% filter(count$Freq>300)
 
 
-#Filter only cities with more than 300 cases
+#Filter only cities with more than 200 cases
 main_ro=main_ro%>%ungroup()%>%distinct()#Remove duplicate. There was some!
 main_ro=main_ro%>%group_by(municipality)%>%filter(n()>300)#Remove municipalities with less than 300 contracts
 
+#Number of cases before and after treatment   
+cases_before <- main_ro%>% filter(main_ro$corrupt_dummy== 0)
+cases_after <- main_ro%>% filter(main_ro$corrupt_dummy==1)
 
 ## Calculate different variables--------------------------------
 
@@ -451,6 +450,10 @@ stat=main_ro%>%
 #RESULTS are in stat
 
 #Statistical analysis (Regression) --------------------------------------------------------------
+main_ro$buyer <- ifelse(main_ro$buyer_buyertype=="REGIONAL_AUTHORITY"|main_ro$buyer_buyertype=="REGIONAL_AGENCY", "Regional", "Other")
+main_ro$national <- ifelse(main_ro$bidder_nuts2=="RO", "RO", "Other")
+main_ro$adm <- ifelse(main_ro$tender_cpvs=="75", "Adm", "Other")
+
 #as numeric few variable
 main_ro$number_of_corrupted_region=as.numeric(main_ro$number_of_corrupted_region)
 main_ro$time_from_corrupted=as.numeric(main_ro$time_from_corrupted)
@@ -489,18 +492,18 @@ correlations <- cor(main_ro%>%select(contractyear,
 # anova(step.model)
 
 model_cri=lm(cri_ro ~ 
+               corrupt_dummy,#+ #Removed using step model
                #municipality+ Removed using step model
-               buyer_buyertype+
+               #buyer_buyertype+
                #buyer_postcode+
                #contractmonth +
                #tender_cpvs+
                #bidder_nuts2+
                #contractyear*time_from_corrupted +
-               contractyear*number_of_corrupted_region+
-               log_price+
+               #contractyear*number_of_corrupted_region+
+               #log_price+
                #time_from_corrupted+
-               corrupt_dummy+ #Removed using step model
-               number_of_corrupted_region ,
+               #number_of_corrupted_region,
              data =main_ro)
 #plot(model_cri) #to check hypothesis
 #Check assumption on residuals. We would like to have a gaussian.
@@ -511,7 +514,60 @@ d<-density(model_cri[['residuals']])
 plot(d,main='Residual KDE Plot',xlab='Residual value')
 summary(model_cri)
 
-tab_model(model_cri)# Write a nice summary in html
+model_cri2=lm(cri_ro ~ 
+               corrupt_dummy+ #Removed using step model
+             #municipality+ Removed using step model
+             buyer_buyertype,#+
+             #buyer,
+             #buyer_postcode+
+             #contractmonth +
+             #tender_cpvs+
+             #bidder_nuts2+
+             #contractyear*time_from_corrupted +
+             #contractyear*number_of_corrupted_region+
+             #log_price+
+             #time_from_corrupted+
+             #number_of_corrupted_region,
+             data =main_ro)
+
+model_cri3=lm(cri_ro ~ 
+              corrupt_dummy+ #Removed using step model
+              #municipality+ Removed using step model
+              buyer_buyertype+
+              #buyer+
+              #buyer_postcode+
+              contractmonth +
+              #tender_cpvs+
+              contractyear+
+              #bidder_nuts2+
+              #contractyear*time_from_corrupted +
+              #contractyear*number_of_corrupted_region+
+              log_price+
+              time_from_corrupted,#+
+              #number_of_corrupted_region,
+              data =main_ro)
+
+model_cri4=lm(cri_ro ~ 
+                corrupt_dummy+ #Removed using step model
+                #municipality+ Removed using step model
+                buyer_buyertype+
+                #buyer+
+                #buyer_postcode+
+                contractmonth +
+                adm +
+                #tender_cpvs+
+                contractyear+
+                national+
+                #bidder_nuts2+
+                #contractyear*time_from_corrupted +
+                #contractyear*number_of_corrupted_region+
+                log_price,#+
+                #time_from_corrupted,#+
+              #number_of_corrupted_region,
+              data =main_ro)
+
+
+tab_model(model_cri, model_cri2, model_cri3,model_cri4)# Write a nice summary in html
 #stargazer(model_cri, type='html')
 
 ## Model singleb regression ---------------------------
@@ -540,20 +596,67 @@ tab_model(model_cri)# Write a nice summary in html
 ##################
 model_singleb=glm(singlebid ~ 
                    # municipality+
+                    corrupt_dummy,#+
                     #buyer_buyertype+
                     #buyer_postcode+
                     #contractmonth +
                     #contractyear*time_from_corrupted +
                     #contractyear*number_of_corrupted_region+
-                    log_price+
+                    #log_price+
                     #number_of_corrupted_region+
-                    corrupt_dummy+
-                    time_from_corrupted, df_method="wald",
+                    #time_from_corrupted, 
+                  #df_method="wald",
                   data =main_ro,family = "binomial")#Binomial regression
 
+model_singleb2=glm(singlebid ~ 
+                    # municipality+
+                    corrupt_dummy+
+                    #buyer_buyertype+
+                    #buyer_postcode+
+                    #contractmonth +
+                    #contractyear*time_from_corrupted +
+                    #contractyear*number_of_corrupted_region+
+                    log_price,#+
+                    #number_of_corrupted_region+
+                    #time_from_corrupted, 
+                  #df_method="wald",
+                  data =main_ro,family = "binomial")#Binomial regression
+
+model_singleb3=glm(singlebid ~ 
+                     # municipality+
+                     corrupt_dummy+
+                     #buyer_buyertype+
+                     buyer+
+                     #buyer_postcode+
+                     #contractmonth +
+                     #contractyear*time_from_corrupted +
+                     #contractyear*number_of_corrupted_region+
+                     log_price,#+
+                   #number_of_corrupted_region+
+                   #time_from_corrupted, 
+                   #df_method="wald",
+                   data =main_ro,family = "binomial")#Binomial regression
+
+model_singleb4=glm(singlebid ~ 
+                     # municipality+
+                     corrupt_dummy+
+                     #buyer_buyertype+
+                     buyer+
+                     #buyer_postcode+
+                     #contractmonth +
+                     #contractyear*time_from_corrupted +
+                     contractyear+
+                     log_price+
+                     national +
+                     adm +
+                   #number_of_corrupted_region+
+                   time_from_corrupted, 
+                   #df_method="wald",
+                   data =main_ro,family = "binomial")#Binomial regression
 
 summary(model_singleb)
-tab_model(model_singleb)# Write a nice summary in html
+summary(model_singleb4)
+tab_model(model_singleb, model_singleb2, model_singleb3, model_singleb4, show.intercept = TRUE, show.est = TRUE)# Write a nice summary in html
 RsqGLM(model_singleb)
 #stargazer(model_singleb, type = "html")
 #Interpretation is the almost the same as linear model
@@ -623,6 +726,7 @@ summary(model_cri)
 ###Model singleb regression taking into account political party---------------------------
 #stepwise
 model_singleb=glm(singlebid ~ #Also removed the municipality and number of bidding. just in case
+                    corrupt_dummy+ 
                     political_party+#political party was not selected in the step model but since it is what we want to look at we can keep it
                     buyer_buyertype+
                     buyer_postcode+
@@ -631,8 +735,7 @@ model_singleb=glm(singlebid ~ #Also removed the municipality and number of biddi
                     contractyear*time_from_corrupted +
                     contractyear*number_of_corrupted_region+
                     log_price+
-                    time_from_corrupted+
-                    #corrupt_dummy,
+                    time_from_corrupted,
                   data =main_ro_political,family = "binomial")
 # step.model <- stepAIC(model_cri, direction = "both", 
 #                              trace = FALSE)
