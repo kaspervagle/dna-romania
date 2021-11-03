@@ -55,7 +55,7 @@ main_ro <- main_ro %>% filter(!is.na(buyer_city_original) & !is.na(buyer_postcod
 main_ro <- main_ro %>% filter(!is.na(date_day))
 
 #Filter out contracts that are too small. The threshold is set at 130 000 RON which equal 26 000 EUR 
-main_ro <- main_ro %>% filter(tender_finalprice > 26000)
+main_ro <- main_ro %>% filter(tender_finalprice > 10000)
 
 #Filter out contracts from national institutions 
 main_ro=main_ro%>%filter(!buyer_buyertype%in%c("NATIONAL_AUTHORITY","EUROPEAN_AGENCY", "NATIONAL_AGENCY"))
@@ -173,13 +173,9 @@ count <- as.data.frame(table(main_ro$municipality))
 count <- count %>% filter(count$Freq>300)
 
 
-#Filter only cities with more than 200 cases
+#Filter only cities with more than 300 cases
 main_ro=main_ro%>%ungroup()%>%distinct()#Remove duplicate. There was some!
 main_ro=main_ro%>%group_by(municipality)%>%filter(n()>300)#Remove municipalities with less than 300 contracts
-
-#Number of cases before and after treatment   
-cases_before <- main_ro%>% filter(main_ro$corrupt_dummy== 0)
-cases_after <- main_ro%>% filter(main_ro$corrupt_dummy==1)
 
 ## Calculate different variables--------------------------------
 
@@ -206,6 +202,9 @@ main_ro=main_ro%>%ungroup()%>%# Mutate add a new column
               )
 
 
+#Number of cases before and after treatment   
+cases_before <- main_ro%>% filter(main_ro$corrupt_dummy==0)
+cases_after <- main_ro%>% filter(main_ro$corrupt_dummy==1)
 
 
 ##Number of corrupted regionally-------------
@@ -255,6 +254,8 @@ meaned_main_ro<-main_ro%>%group_by(window)%>%
   summarise(mean_cri_ro=mean(cri_ro))
 meaned_main_ro$window=(meaned_main_ro$window*window_length+window_length/2)+min(main_ro$time_from_corrupted)
 meaned_main_ro=meaned_main_ro%>%rename(time_from_corrupted=window)
+
+main_ro<- main_ro %>% filter(case1 > "2010-12-12")
 
 # Graphical idea -----------------------------------
 ## Plot CRI against the time from first enforcement only for municipality of one enforcement case
@@ -355,7 +356,7 @@ dimnames(xtab) <- list(
   Class = c("years-1","years-2","years-3","years1","years2","years3" )
 )
 # Perform the fisher test to city merge dataset
-result_stat2=xtab%>%pairwise_fisher_test(alternative="two-sided")%>%filter(
+result_stat2=xtab%>%pairwise_fisher_test(alternative="two.sided")%>%filter(
   (group1=="years-1"&group2=="years1")|(group1=="years-2"&group2=="years2")|(group1=="years-3"&group2=="years3"))
 result_stat2$municipality="All"# Add an identification name
 #Merge both test datasets and adjust p-value
@@ -655,7 +656,7 @@ model_singleb4=glm(singlebid ~
                    data =main_ro,family = "binomial")#Binomial regression
 
 summary(model_singleb)
-summary(model_singleb4)
+summary(model_singleb2)
 tab_model(model_singleb, model_singleb2, model_singleb3, model_singleb4, show.intercept = TRUE, show.est = TRUE)# Write a nice summary in html
 RsqGLM(model_singleb)
 #stargazer(model_singleb, type = "html")
