@@ -383,6 +383,7 @@ main_ro_matching$aftermatchweight <- mat1_0$w
 #Filter out unmatched
 main_ro_matching_final <- main_ro_matching %>% filter(aftermatchtreat == TRUE)
 
+#Does it match across cities? 
 
 ##Fisher test singleb for corrupt_dummy---------------------------------------
 #Matching test of before and after the first corruption enforcement for singleb
