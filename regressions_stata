@@ -1,0 +1,144 @@
+ssc install reghdfe
+ssc install ftools
+
+// Pre match data
+import excel "C:\Users\s13476\Documents\Downloads\main_ro.xlsx", sheet("Sheet1") firstrow clear
+
+// Post match data 
+import excel "C:\Users\s13476\Documents\Downloads\main_ro_match.xlsx", sheet("Sheet1") firstrow clear
+
+gen buyer1 =real(buyer)
+gen national1 =real(national)
+gen adm1 =real(adm)
+//encode singleb, gen(singleb2)
+encode contractmonth, gen(contractmonth1)
+encode municipality, gen(municipality1)
+//encode contractyear, gen(contractyear1)
+
+
+// LM (Linear model) as CRI is a variable with values between 0 and 1. 
+// with clustering on municipalities 
+regress cri_ro corrupt_dummy, cluster(municipality)
+estimates store m1, title(Model 1)
+
+regress cri_ro corrupt_dummy log_price contractyear contractmonth1, cluster(municipality)
+estimates store m2, title(Model 2)
+
+regress cri_ro corrupt_dummy log_price contractyear contractmonth1 national1 buyer1, cluster(municipality)
+estimates store m3, title(Model 3)
+
+estout m1 m2 m3, cells(b(star fmt(3)) se(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 df_r bic)
+
+   
+// Without clustering on municipality   
+regress cri_ro corrupt_dummy
+estimates store m1, title(Model 1)
+
+regress cri_ro corrupt_dummy log_price contractyear contractmonth1
+estimates store m2, title(Model 2)
+
+regress cri_ro corrupt_dummy log_price contractyear contractmonth1 national1 buyer1
+estimates store m3, title(Model 3)
+
+estout m1 m2 m3, cells(b(star fmt(3)) se(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 df_r bic)   
+   
+
+// Generalized linear model Single bid regressions with clusters on municipality. Use GLM as singlebid is a binary variable. 
+
+glm singleb corrupt_dummy log_price, family(binomial 1) link(logit) cluster(municipality)
+estimates store m1, title(Model 1)
+
+
+glm singleb corrupt_dummy log_price contractyear contractmonth1, family(binomial 1) link(logit) cluster(municipality)
+estimates store m2, title(Model 2)
+
+glm singleb corrupt_dummy log_price contractyear contractmonth1 national1 buyer1, family(binomial 1) link(logit) cluster(municipality)
+estimates store m3, title(Model 3)
+
+estout m1 m2 m3, cells(b(star fmt(3)) se(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 df_r bic)
+
+ // Withouth clustering on municipalities   
+   
+ glm singleb corrupt_dummy log_price, family(binomial 1) link(logit) 
+estimates store m1, title(Model 1)
+
+
+glm singleb corrupt_dummy log_price contractyear contractmonth1, family(binomial 1) link(logit) 
+estimates store m2, title(Model 2)
+
+glm singleb corrupt_dummy log_price contractyear contractmonth1 national1 buyer1, family(binomial 1) link(logit) 
+estimates store m3, title(Model 3)
+
+estout m1 m2 m3, cells(b(star fmt(3)) se(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 df_r bic)
+
+   
+   
+//fixed effects CRI
+// with clustering 
+reghdfe cri_ro corrupt_dummy, noabsorb cluster(municipality)
+estimates store m1, title(Model 1)
+
+reghdfe cri_ro corrupt_dummy, absorb(contractyear) cluster(municipality)
+estimates store m2, title(Model 2)
+
+reghdfe cri_ro corrupt_dummy log_price time_from_corrupted, absorb(buyer_buyertype contractmonth contractyear) cluster(municipality)
+estimates store m3, title(Model 3)
+
+estout m1 m2 m3, cells(b(star fmt(3)) se(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 df_r bic)
+
+//withouth clustering 
+reghdfe cri_ro corrupt_dummy, noabsorb
+estimates store m1, title(Model 1)
+
+reghdfe cri_ro corrupt_dummy, absorb(contractyear) 
+estimates store m2, title(Model 2)
+
+reghdfe cri_ro corrupt_dummy log_price time_from_corrupted, absorb(buyer_buyertype contractmonth contractyear) 
+estimates store m3, title(Model 3)
+
+estout m1 m2 m3, cells(b(star fmt(3)) se(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 df_r bic)
+
+ //fixed effects Singlebid
+// with clustering 
+reghdfe singleb corrupt_dummy, noabsorb cluster(municipality)
+estimates store m1, title(Model 1)
+
+reghdfe singleb corrupt_dummy, absorb(contractyear) cluster(municipality)
+estimates store m2, title(Model 2)
+
+reghdfe singleb corrupt_dummy log_price time_from_corrupted, absorb(buyer_buyertype contractmonth contractyear) cluster(municipality)
+estimates store m3, title(Model 3)
+
+estout m1 m2 m3, cells(b(star fmt(3)) se(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 df_r bic)
+
+//withouth clustering 
+reghdfe singleb corrupt_dummy, noabsorb
+estimates store m1, title(Model 1)
+
+reghdfe singleb corrupt_dummy, absorb(contractyear) 
+estimates store m2, title(Model 2)
+
+reghdfe singleb corrupt_dummy log_price time_from_corrupted, absorb(buyer_buyertype contractmonth contractyear) 
+estimates store m3, title(Model 3)
+
+estout m1 m2 m3, cells(b(star fmt(3)) se(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 df_r bic)  
+   
+
+
+
