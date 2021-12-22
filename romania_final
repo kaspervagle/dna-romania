@@ -1,1 +1,464 @@
 
+## Importing relevant packages and data --------------------
+
+library(easypackages)
+packages("dplyr","foreach" ,"dplyr","rstatix", "data.table", "readxl", "readr", "stringr",
+         "stringi", "openxlsx", "tidyr", "zoo", "ggplot2", "forcats","corrplot",
+         "vroom", "foreign", "haven", "tidyverse", "purrr", "broom",
+         "modEvA", "stargazer","nlme","sjPlot","sjmisc","sjlabelled", "cem", "gridExtra")
+
+Sys.setenv(TZ = "GMT")
+memory.limit(size = 30000)
+gc()
+setwd("C:/Users/s13476/OneDrive - Norges Handelshøyskole/My papers/Paper 3/Data/") 
+
+# Import the procurement data, filtering out only the variable we need. 
+raw_ro1 <- fread(file = "RO_May21.csv", 
+                 sep=",",
+                 select = c("tender_id",
+                            "tender_cpvs",
+                            "tender_finalprice",
+                            "buyer_city_original",
+                            "buyer_buyertype",
+                            "buyer_postcode",
+                            "buyer_id",
+                            "tender_publications_firstdcontra",
+                            "bid_digiwhist_price",
+                            "singleb",
+                            "aw_date",
+                            "lot_bidscount",
+                            "cri_ro",
+                            "bidder_nuts"),
+                 encoding='UTF-8')
+
+#Import the enforcement data
+enforcement_ro <- read_excel("enforcement_ro.xlsx")
+
+## Data processing and cleaning ------------------------------------------
+names(raw_ro1)
+Sys.setlocale(locale = "C")
+raw_ro1$date_day<- as.Date(raw_ro1$aw_date, format= "%d%b%Y")
+
+#Creating data frames 
+enforcement_ro<-data.frame(enforcement_ro)
+main_ro <- data.frame(raw_ro1)
+
+#FILTERING 
+#Filter out entries that don't have city name
+main_ro <- main_ro %>% filter(!is.na(buyer_city_original))
+
+#Filter missing in award date procurement
+main_ro <- main_ro %>% filter(!is.na(date_day))
+
+#Filter out contracts that are too small. The threshold is set at 130 000 RON which equal 26 000 EUR 
+main_ro <- main_ro %>% filter(tender_finalprice > 26000)
+
+#Filter out contracts from national institutions 
+main_ro=main_ro%>%filter(!buyer_buyertype%in%c("NATIONAL_AUTHORITY","EUROPEAN_AGENCY", "NATIONAL_AGENCY"))
+
+# all variable names in the enforcement data lower case
+names(enforcement_ro) <- tolower(names(enforcement_ro))
+
+#Filer cases before 2009 and after 2019 (we do not want entries influenced by corona)
+main_ro <- main_ro %>% filter(tender_publications_firstdcontra < procurment_end)
+
+#Fix formatting on municipality names
+main_ro$buyer_city_original <- stri_trans_general(main_ro$buyer_city_original,id = "latin-ascii")
+
+#Clean enforcement data names
+enforcement_ro$municipality=enforcement_ro$municipality%>%
+  tolower()%>% #To lower case
+  str_remove_all(pattern = "comuna")%>% #Remove comuna string
+  str_remove_all(pattern ="\\(.*\\)" )%>% #Remove comuna in parenthesis
+  str_replace_all(pattern = "-",replacement = " ")%>% #Replace dashes by whitespace
+  str_replace_all(pattern = "\\s+",replacement = " ") #Replace multiple whitespace by only one
+
+#Delete rows that correspond to the same case, so that one corruption case only occur once.
+enforcement_ro <- distinct(enforcement_ro,nr_of_penal_decision, .keep_all=TRUE)
+enforcement_ro_edited<-enforcement_ro
+enforcement_ro_edited<-enforcement_ro_edited%>%select(municipality,date_of_indictment)
+
+#Filter out corruption cases that happened before 2009 (before we have procurement data)
+procurment_start <- as.POSIXct("2009-01-01")
+procurment_end <- as.POSIXct("2019-12-31")
+enforcement_ro_edited <- enforcement_ro_edited %>% filter(date_of_indictment>=procurment_start)
+
+#Defining dates.
+enforcement_ro$date_of_definitive_sentencing <- as.POSIXct(enforcement_ro$date_of_definitive_sentencing, format='%Y/%m/%d') 
+enforcement_ro$date_of_indictment <- as.POSIXct(enforcement_ro$date_of_indictment, format='%Y/%m/%d')  
+main_ro$tender_publications_firstdcontra <-as.POSIXct(main_ro$tender_publications_firstdcontra, format='%Y/%m/%d')
+
+#Collapse the enforcement data, so that each municipality have one row with all the corruption cases for that municipality. 
+enforcement_ro_collapsed <- enforcement_ro_edited %>% 
+  group_by_at(vars(municipality)) %>%
+  summarize_all(paste, collapse=",") %>%
+  separate(col= "date_of_indictment", into= c("case1","case2","case3","case4","case5","case6"), sep = ",")
+
+#Dummy for treated municipalities 
+treated_cities <- enforcement_ro_collapsed$municipality
+
+##Extracting months and years for the procurement contracts
+main_ro$contractyear<- ifelse(is.na(main_ro$tender_publications_firstdcontra), substring(main_ro$tender_publications_firstdcontra,1,4),substring(main_ro$tender_publications_firstdcontra,1,4)) #Contract year
+main_ro$contractmonth <- ifelse(is.na(main_ro$tender_publications_firstdcontra), substring(main_ro$tender_publications_firstdcontra,6,7),substring(main_ro$tender_publications_firstdcontra,6,7)) #Contract month
+
+#Generating month and year as date
+main_ro$date <- as.yearmon(paste(main_ro$contractmonth, main_ro$contractyear), "%m %Y")
+
+#Convert contract month and year to numeric to have a continuous variable
+main_ro$contractmonth=as.numeric(main_ro$contractmonth) 
+main_ro$contractyear=as.numeric(main_ro$contractyear)
+
+#Calculate the log of the price
+main_ro$log_price <- log(main_ro$tender_finalprice)
+
+#Get the two first digit of postcode to have the state number
+main_ro$region=substr(main_ro$buyer_postcode,start = 1,stop = 2)
+
+#Fixing cities with multiple names
+main_ro$buyer_city_original <- as.character(main_ro$buyer_city_original)
+main_ro$buyer_city_original[main_ro$buyer_city_original == "Iasi (Iasi)"] <- "Iasi"
+main_ro$buyer_city_original[main_ro$buyer_city_original == "DROBETA-TURNU SEVERIN"] <- "Drobeta-Turnu Severin"
+main_ro$buyer_city_original[main_ro$buyer_city_original == "Marma<U+021B>iei"] <- "Sighetu Marmatiei"
+main_ro$buyer_city_original[main_ro$buyer_city_original == "Mironeasas<U+00A0>"] <- "Mironeasa"
+main_ro$buyer_city_original[main_ro$buyer_city_original == "Chiscani, jud. Braila"] <- "Chiscani"
+main_ro$buyer_city_original[main_ro$buyer_city_original == "CaransebesP-ta Gen.Ioan Dragalina nr.2"] <- "Caransebes"
+main_ro$buyer_city_original[main_ro$buyer_city_original == "Rosiori de Vede"] <- "Rosiorii de Vede"
+main_ro$buyer_city_original[main_ro$buyer_city_original == "Sebe?, Lancram"] <- "Sebes, Lancram"
+main_ro$buyer_city_original[main_ro$buyer_city_original == "suplacul d ebarcau"] <- "suplacu de barcau"
+
+#Fixing city names in main_ro
+main_ro$buyer_city_original=main_ro$buyer_city_original%>%
+  tolower()%>%#to lower case
+  str_remove_all(pattern = "comuna")%>%#Remove "comuna"
+  str_remove_all(pattern ="\\(.*\\)" )%>%#Remove things between parenthesis
+  str_replace_all(pattern = "-",replacement = " ")%>%
+  str_replace_all(pattern = "-",replacement = " ")%>%#replace dashes by white space
+  str_replace_all(pattern = "\\s+",replacement = " ")#replace multiple white space by only one
+
+#Rename municipality variable to "municipality" in procurement data. 
+main_ro=main_ro%>%rename(municipality=buyer_city_original)
+
+#Combine the two data sets, enforcement and procurement.  
+#Adds date of enforcement case to main_ro. It merge all columns based on the by= 
+main_ro=merge(x = main_ro, y = enforcement_ro_collapsed, by = "municipality")
+
+#Filter out Bucharest
+main_ro=main_ro%>%filter(municipality!="bucuresti") 
+
+#Filter cases before 2009
+main_ro=main_ro%>%filter(contractyear>2008)
+
+#Keeping a dataframe with all the corruption cases
+main_ro_allcases <- main_ro
+
+#Remove municipality with more than one case
+main_ro=main_ro%>%filter(is.na(case2))
+
+## Creating variables--------------------------------
+
+main_ro=main_ro%>%ungroup()%>% #Mutate add a new column
+  mutate(corrupt_dummy=case_when( #A dummy indicating before and after the corruption case. 0 before, 1 after)
+    date_day> case1~1,
+    date_day< case1~0, 
+  ),
+  time_from_corrupted= as.Date(date_day)-as.Date(case1),#The difference between the date_day and the enforcement case1
+  years_apart_corrupt=case_when(
+    time_from_corrupted %between% c(0,365)~1,
+    time_from_corrupted %between% c(365,2*365)~2,
+    time_from_corrupted %between% c(2*365,3*365)~3,
+    time_from_corrupted %between% c(-365,0)~-1,
+    time_from_corrupted %between% c(-2*365,-365)~-2,
+    time_from_corrupted %between% c(-3*365,-2*365)~-3,
+  ),
+  weeks_from_corrupted= floor(as.numeric(time_from_corrupted)/7
+  ),
+  months_from_corrupted =floor(round(as.numeric(time_from_corrupted)/356*12))
+  
+  )
+
+#Remove contracts more than 3 years before or after the corruption case. 
+main_ro <- main_ro %>% filter(!is.na(main_ro$years_apart_corrupt))
+
+#Filter only cities with more than 10 cases
+#main_ro=main_ro%>%ungroup()%>%distinct()#Remove duplicate. There was some!
+main_ro=main_ro%>%group_by(municipality)%>%filter(n()>10)#Remove municipalities with less than 10 contracts
+
+main_ro$cri_ro <- as.numeric(main_ro$cri_ro)
+
+#Take only first 2 number of cpv
+main_ro$tender_cpvs=str_sub(string = main_ro$tender_cpvs,start = 1,end = 2)
+
+#Create the true singlebid binary
+main_ro$singlebid=NA
+main_ro[which(main_ro$lot_bidscount==1),"singlebid"]=1
+main_ro[which(main_ro$lot_bidscount>1),"singlebid"]=0
+
+#Creating the 2 and 3 letter bidder nuts
+main_ro$bidder_nuts2=substr(main_ro$bidder_nuts,start = 1,stop = 2)#bidder nuts code with 2 letter
+main_ro$bidder_nuts3=substr(main_ro$bidder_nuts,start = 1,stop = 3)#bidder nuts code with 3 letters
+
+
+window_length=30#Mean by 30 days
+main_ro$time_from_corrupted=as.numeric(main_ro$time_from_corrupted)
+main_ro$window=findInterval(x = main_ro$time_from_corrupted,
+                            seq(min(main_ro$time_from_corrupted),max(main_ro$time_from_corrupted),
+                                window_length))
+meaned_main_ro<-main_ro%>%group_by(window)%>%
+  summarise(mean_cri_ro=mean(cri_ro))
+meaned_main_ro$window=(meaned_main_ro$window*window_length+window_length/2)+min(main_ro$time_from_corrupted)
+meaned_main_ro=meaned_main_ro%>%rename(time_from_corrupted=window)
+
+main_ro<- main_ro %>% filter(case1 > "2009-06-17")
+main_ro$domestic <- ifelse(main_ro$bidder_nuts2=="RO", "1", "0")
+main_ro$contractmonth <- as.factor(main_ro$contractmonth)
+
+options(scipen = 50)
+
+#Number of cases before and after treatment   
+cases_before <- main_ro%>% filter(corrupt_dummy== 0)
+cases_after <- main_ro%>% filter(corrupt_dummy== 1)
+## Descriptive statistics------------------
+
+#otal amount of single bid contracts before and after treatment. 
+contingency=main_ro%>%
+  group_by(years_apart_corrupt, singlebid)%>%
+  tally()%>%spread(singlebid,n)
+
+#Overview of cities studies and the date of corruption
+contingency=main_ro%>%
+  group_by(municipality,case1,singlebid)%>%
+  tally()%>%spread(singlebid,n)
+
+library("writexl")
+write_xlsx(contingency,"~/Downloads\\contingency.xlsx")
+
+## T-test CRI unmatched all municipalities 1,2,3y---------------
+pre_3y <- main_ro%>% filter(years_apart_corrupt==-3|years_apart_corrupt==-2|years_apart_corrupt==-1)
+pre_2y <- main_ro%>% filter(years_apart_corrupt==-2|years_apart_corrupt==-1)
+pre_1y <- main_ro%>% filter(years_apart_corrupt==-1)
+
+post_3y <- main_ro%>% filter(years_apart_corrupt==3|years_apart_corrupt==2|years_apart_corrupt==1)
+post_2y <- main_ro%>% filter(years_apart_corrupt==2|years_apart_corrupt==1)
+post_1y <- main_ro%>% filter(years_apart_corrupt==1)
+
+#mean before - mean after t-test
+#m3_c<-t.test(pre_3y$cri_ro,post_3y$cri_ro, conf.level = 0.95) 
+#m2_c<-t.test(pre_2y$cri_ro,post_2y$cri_ro, conf.level = 0.95)
+#m1_c<-t.test(pre_1y$cri_ro,post_1y$cri_ro, conf.level = 0.95)
+
+#Mean after - mean before t-test
+m3_c<-t.test(post_3y$cri_ro,pre_3y$cri_ro, conf.level = 0.95)
+m2_c<-t.test(post_2y$cri_ro,pre_2y$cri_ro, conf.level = 0.95)
+m1_c<-t.test(post_1y$cri_ro,pre_1y$cri_ro, conf.level = 0.95)
+
+
+tab1<-map_df(list(m1_c,m2_c,m3_c), tidy)
+tab1[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+
+## T-test SB unmatched all municipalities 1,2,3y----------------
+
+dfsinglebid=main_ro%>%
+  group_by(months_from_corrupted,singlebid)%>%
+  tally()%>%#Count singlebid by months
+  filter(!is.na(singlebid))%>%#Remove NA
+  pivot_wider(names_from = singlebid,values_from = n)%>%# Long to wide the singlebid for better mathematical handling
+  rename(not_single_bid="FALSE",single_bid="TRUE")%>%rowwise()%>%#Rename to make it clearer
+  mutate(sample_size=sum(not_single_bid+single_bid,na.rm = T),#Get sample size for each months
+         ratio_singleb=single_bid/sample_size)#%>%# Calculate the ratio of single bid contracts
+
+pre_3y <- dfsinglebid[2:37,]
+pre_2y <- dfsinglebid[14:37,]
+pre_1y <- dfsinglebid[26:37,]
+
+post_3y <- dfsinglebid[38:50,]
+post_2y <- dfsinglebid[38:62,]
+post_1y <- dfsinglebid[38:74,]
+
+#Before - after test
+#m3_s<-t.test(pre_3y$ratio_singleb,post_3y$ratio_singleb, conf.level = 0.95)
+#m2_s<-t.test(pre_2y$ratio_singleb,post_2y$ratio_singleb, conf.level = 0.95)
+#m1_s<-t.test(pre_1y$ratio_singleb,post_1y$ratio_singleb, conf.level = 0.95)
+
+#After-before test
+m3_s<-t.test(post_3y$ratio_singleb,pre_3y$ratio_singleb, conf.level = 0.95)
+m2_s<-t.test(post_2y$ratio_singleb,pre_2y$ratio_singleb, conf.level = 0.95)
+m1_s<-t.test(post_1y$ratio_singleb,pre_1y$ratio_singleb, conf.level = 0.95)
+m3_s
+
+tab2<-map_df(list(m1_s,m2_s,m3_s), tidy)
+tab2[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+## Matching (CEM) CRI-----------
+
+#Preparing the data frame
+main_ro_matching=main_ro%>%select(tender_id, domestic, time_from_corrupted, contractyear, contractmonth,cri_ro,tender_cpvs,log_price,buyer_id,buyer_buyertype,corrupt_dummy,years_apart_corrupt,municipality)
+
+#Cleaning 
+main_ro_matching<- data.frame(na.omit(main_ro_matching))
+main_ro_matching<-main_ro_matching %>% filter(!is.na(cri_ro))
+
+var1<-c("cri_ro","log_price")
+var2<-c("cri_ro", "tender_id", "years_apart_corrupt", "domestic", "time_from_corrupted", "contractyear", "municipality" )
+
+#imbalance(group=main_ro_matching$cri_ro, data=main_ro_matching[var1])
+summary(main_ro_matching$log_price)
+#Value cuts based on quartile
+valuecuts1_0 = c(12.47,13.70,15.03)
+
+#Variable grouping
+buyer_buyerType.grp<-list(c("REGIONAL_AUTHORITY", "REGIONAL_AGENCY", "UTILITIES"),c("OTHER"), c("PUBLIC_BODY"), c("NA",NA))
+
+#Compute the coarsened exact matching
+mat1_0 <- cem(treatment = "corrupt_dummy",drop = var2, grouping = list(buyer_buyertype= buyer_buyerType.grp), cutpoints = list(log_price=valuecuts1_0), eval.imbalance = F,data = main_ro_matching)
+table(mat1_0$matched)
+
+main_ro_matching$aftermatchtreat <- mat1_0$matched
+main_ro_matching$aftermatchweight <- mat1_0$w
+
+#Filter out unmatched
+main_ro_matching_final <- main_ro_matching %>% filter(aftermatchtreat == TRUE)
+
+
+## T-test CRI matched all municipalities 1,2,3y ------------------
+match_pre_1 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == 1)
+match_post_1 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == 1)
+
+match_pre_2 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == 1 | years_apart_corrupt == 2)
+match_post_2 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == 1 | years_apart_corrupt == 2 )
+
+match_pre_3 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == -3 | years_apart_corrupt == 1 | years_apart_corrupt == 2 | years_apart_corrupt == 3)
+match_post_3 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == -3 | years_apart_corrupt == 1 | years_apart_corrupt == 2 | years_apart_corrupt == 3 )
+
+# mean after - mean before 1,2 and 3 years
+matched_comp_cri_1 <- t.test( match_post_1$cri_ro,match_pre_1$cri_ro, paired = FALSE, conf.level =0.95)
+matched_comp_cri_1
+
+matched_comp_cri_2 <- t.test( match_post_2$cri_ro,match_pre_2$cri_ro, paired = FALSE, conf.level =0.95)
+matched_comp_cri_2
+
+matched_comp_cri_3 <- t.test( match_post_3$cri_ro,match_pre_3$cri_ro, paired = FALSE, conf.level =0.95)
+matched_comp_cri_3
+
+tab<-map_df(list(matched_comp_cri_1,matched_comp_cri_2,matched_comp_cri_3), tidy)
+tab[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+
+## Matching (CEM) SB ------------------------------------
+
+#data preparation
+main_ro$contractmonth <- as.factor(main_ro$contractmonth)
+main_ro$singleb [is.na(main_ro$singleb)] = 0
+
+#Matching of the treated group of contracts with the non-treated group, creating a control group. 
+main_ro_matching=main_ro%>%select(tender_id, domestic, time_from_corrupted, contractyear, contractmonth, singleb, tender_cpvs,log_price,buyer_id,buyer_buyertype,corrupt_dummy,years_apart_corrupt,municipality)
+
+#Cleaning
+main_ro_matching<- data.frame(na.omit(main_ro_matching))
+main_ro_matching<-main_ro_matching %>% filter(!is.na(singleb))
+
+#Defining groups of variables
+var1<-c("singleb","log_price")
+var2<-c("singleb", "tender_id", "years_apart_corrupt", "domestic", "time_from_corrupted", "contractyear", "municipality")
+
+#imbalance(group=main_ro_matching$singlebid, data=main_ro_matching[var1])
+summary(main_ro_matching$log_price)
+
+#Value cuts based on quartile
+valuecuts1_0 = c(12.47,13.70,15.03)
+
+#Variable grouping
+buyer_buyerType.grp<-list(c("REGIONAL_AUTHORITY", "REGIONAL_AGENCY", "UTILITIES"),c("OTHER"), c("PUBLIC_BODY"), c("NA",NA))
+
+#Compute the coarsened exact matching
+mat1_0 <- cem(treatment = "corrupt_dummy",drop = var2, grouping = list(buyer_buyertype= buyer_buyerType.grp),cutpoints = list(log_price=valuecuts1_0), eval.imbalance = F,data = main_ro_matching)
+table(mat1_0$matched)
+
+main_ro_matching$aftermatchtreat <- mat1_0$matched
+main_ro_matching$aftermatchweight <- mat1_0$w
+
+#Filter out unmatched
+main_ro_matching_final <- main_ro_matching %>% filter(aftermatchtreat == TRUE)
+
+## T-test SB matched all municipalities 1,2,3y ------------------
+match_pre_1 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == 1)
+match_post_1 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == 1)
+
+match_pre_2 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == 1 | years_apart_corrupt == 2)
+match_post_2 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == 1 | years_apart_corrupt == 2 )
+
+match_pre_3 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == -3 | years_apart_corrupt == 1 | years_apart_corrupt == 2 | years_apart_corrupt == 3)
+match_post_3 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == -3 | years_apart_corrupt == 1 | years_apart_corrupt == 2 | years_apart_corrupt == 3 )
+
+# mean after - mean before 1,2 and 3 years
+matched_comp_sb_1 <- t.test( match_post_1$singleb,match_pre_1$singleb, paired = FALSE, conf.level =0.95)
+matched_comp_sb_1
+
+matched_comp_sb_2 <- t.test( match_post_2$singleb,match_pre_2$singleb, paired = FALSE, conf.level =0.95)
+matched_comp_sb_2
+
+matched_comp_sb_3 <- t.test( match_post_3$singleb,match_pre_3$singleb, paired = FALSE, conf.level =0.95)
+matched_comp_sb_3
+
+tab<-map_df(list(matched_comp_sb_1,matched_comp_sb_2,matched_comp_sb_3), tidy)
+tab[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+## Regression preparation - continue in STATA --------------
+
+#Write the pre matched data 
+write_xlsx(main_ro,path = "~/Downloads\\main_ro.xlsx")
+
+#Write the post matched data (Remember to run the code for either SB og CRI, depending on the DV stduied)
+write_xlsx(main_ro_matching_final, path = "~/Downloads\\main_ro_match.xlsx")
+
+## Analysis including cities with 2 and 3 corruption cases -------------------
+
+#Case 2 dummy + time before/after corruption case
+main_ro_allcases=main_ro_allcases%>%ungroup()%>% #Mutate add a new column
+  mutate(corrupt_dummy_case2=case_when( #A dummy indicating before and after the corruption case . 0 before, 1 after)
+    date_day> case2~1,
+    date_day< case2~0, 
+  ),
+  time_from_corrupted_case2= as.Date(date_day)-as.Date(case2),#The difference between the date_day and the enforcement case1
+  years_apart_corrupt_case2=case_when(
+    time_from_corrupted_case2 %between% c(0,365)~1,
+    time_from_corrupted_case2 %between% c(365,2*365)~2,
+    time_from_corrupted_case2 %between% c(2*365,3*365)~3,
+    time_from_corrupted_case2 %between% c(-365,0)~-1,
+    time_from_corrupted_case2 %between% c(-2*365,-365)~-2,
+    time_from_corrupted_case2 %between% c(-3*365,-2*365)~-3,
+  ),
+  weeks_from_corrupted_case2= floor(as.numeric(time_from_corrupted_case2)/7
+  ),
+  months_from_corrupted_case2 =floor(round(as.numeric(time_from_corrupted_case2)/356*12))
+  
+  )
+
+#Case 3 dummy + time before/after corruption case
+main_ro_allcases=main_ro_allcases%>%ungroup()%>% #Mutate add a new column
+  mutate(corrupt_dummy_case3=case_when( #A dummy indicating before and after the corruption case . 0 before, 1 after)
+    date_day> case3~1,
+    date_day< case3~0, 
+  ),
+  time_from_corrupted_case3= as.Date(date_day)-as.Date(case3),#The difference between the date_day and the enforcement case1
+  years_apart_corrupt_case3=case_when(
+    time_from_corrupted_case3 %between% c(0,365)~1,
+    time_from_corrupted_case3 %between% c(365,2*365)~2,
+    time_from_corrupted_case3 %between% c(2*365,3*365)~3,
+    time_from_corrupted_case3 %between% c(-365,0)~-1,
+    time_from_corrupted_case3 %between% c(-2*365,-365)~-2,
+    time_from_corrupted_case3 %between% c(-3*365,-2*365)~-3,
+  ),
+  weeks_from_corrupted_case3= floor(as.numeric(time_from_corrupted_case3)/7
+  ),
+  months_from_corrupted_case3 =floor(round(as.numeric(time_from_corrupted_case3)/356*12))
+  
+  )
+
+merge <- main_ro %>% select(tender_id, corrupt_dummy, time_from_corrupted, years_apart_corrupt)
+
+#Include the case 1 dummy and time before and after treatment MISSING AND NOT WORKING AT THE MOMENT
+main_ro_allcases1 <- merge(main_ro_allcases, merge, by = c("municipality","tender_id"))
+
+#Remove contracts more than 3 years before or after the corruption case. 
+main_ro <- main_ro %>% filter(!is.na(main_ro$years_apart_corrupt))
+
+#Filter only cities with more than 10 cases
+#main_ro=main_ro%>%ungroup()%>%distinct()#Remove duplicate. There was some!
+main_ro=main_ro%>%group_by(municipality)%>%filter(n()>10)#Remove municipalities with less than 10 contracts
