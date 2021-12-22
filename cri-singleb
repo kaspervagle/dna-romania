@@ -87,7 +87,7 @@ enforcement_ro_edited<-enforcement_ro
 #keeps <- c("nr_of_penal_decision","municipality", "zip_code", "date_of_definitive_sentencing", "date_of_indictment")
 enforcement_ro_edited<-enforcement_ro_edited%>%select(municipality,date_of_indictment)
 
-#filter out corruption cases that happened before the 2009 (before we have procurement data)
+#filter out corruption cases that happened before 2009 (before we have procurement data)
 procurment_start <- as.POSIXct("2009-01-01")
 procurment_end <- as.POSIXct("2019-12-31")
 enforcement_ro_edited <- enforcement_ro_edited %>% filter(date_of_indictment>=procurment_start)
@@ -107,6 +107,8 @@ enforcement_ro_collapsed <- enforcement_ro_edited %>%
    group_by_at(vars(municipality)) %>%
    summarize_all(paste, collapse=",") %>%
    separate(col= "date_of_indictment", into= c("case1","case2","case3","case4","case5","case6"), sep = ",")
+
+write_xlsx(enforcement_ro_collapsed,"~/Downloads\\enforcement_ro_collapsed.xlsx")
 
 ##Removing Missing CRI_RO
 #main_ro<- main_ro %>% filter(!is.na(cri_ro))
@@ -170,6 +172,8 @@ main_ro=main_ro%>%filter(municipality!="bucuresti")# We lost a lot of contract
 #Remove municipality with more than one case
 main_ro=main_ro%>%filter(is.na(case2))
 
+main_ro=main_ro%>%filter(contractyear>2008)
+
 #Counting the amount of cases for each city to extract which cities are relevant to study
 count <- as.data.frame(table(main_ro$municipality))
 count <- count %>% filter(count$Freq>10)
@@ -206,7 +210,7 @@ main_ro=main_ro%>%ungroup()%>%# Mutate add a new column
 main_ro <- main_ro %>% filter(!is.na(main_ro$years_apart_corrupt))
 
 #Filter only cities with more than 10 cases
-main_ro=main_ro%>%ungroup()%>%distinct()#Remove duplicate. There was some!
+#main_ro=main_ro%>%ungroup()%>%distinct()#Remove duplicate. There was some!
 main_ro=main_ro%>%group_by(municipality)%>%filter(n()>10)#Remove municipalities with less than 10 contracts
 
 main_ro$cri_ro <- as.numeric(main_ro$cri_ro)
@@ -260,6 +264,8 @@ meaned_main_ro$window=(meaned_main_ro$window*window_length+window_length/2)+min(
 meaned_main_ro=meaned_main_ro%>%rename(time_from_corrupted=window)
 
 main_ro<- main_ro %>% filter(case1 > "2009-06-17")
+main_ro$domestic <- ifelse(main_ro$bidder_nuts2=="RO", "1", "0")
+main_ro$contractmonth <- as.factor(main_ro$contractmonth)
 
 options(scipen = 50)
 
@@ -443,15 +449,15 @@ result_stat3=rbind.data.frame(result_stat2,result_stat)%>%adjust_pvalue()
 
 #Statistical analysis (CEM and matching) CRI_RO ----------------------------------------------------------
 
-main_ro$buyer <- ifelse(main_ro$buyer_buyertype=="REGIONAL_AUTHORITY"|main_ro$buyer_buyertype=="REGIONAL_AGENCY", "1", "0")
-main_ro$national <- ifelse(main_ro$bidder_nuts2=="RO", "1", "0")
-main_ro$adm <- ifelse(main_ro$tender_cpvs=="75", "1", "0")
+#main_ro$buyer <- ifelse(main_ro$buyer_buyertype=="REGIONAL_AUTHORITY"|main_ro$buyer_buyertype=="REGIONAL_AGENCY", "1", "0")
+
+#main_ro$adm <- ifelse(main_ro$tender_cpvs=="75", "1", "0")
 
 
-main_ro$contractmonth <- as.factor(main_ro$contractmonth)
+
 
 #Matching of the treated group of contracts with the non-treated group, creating a control group. 
-main_ro_matching=main_ro%>%select(national, adm, buyer, time_from_corrupted, contractyear, contractmonth,cri_ro,tender_cpvs,log_price,buyer_id,buyer_buyertype,corrupt_dummy,years_apart_corrupt,municipality)
+main_ro_matching=main_ro%>%select(tender_id, domestic, time_from_corrupted, contractyear, contractmonth,cri_ro,tender_cpvs,log_price,buyer_id,buyer_buyertype,corrupt_dummy,years_apart_corrupt,municipality)
 main_ro_matching<- data.frame(na.omit(main_ro_matching))
 #main_ro_matching<- data.frame(main_ro_matching)
 
@@ -461,7 +467,7 @@ var1<-c("cri_ro","log_price")
 #var2<-c("cri_ro", "buyer_id", "contractmonth", "years_apart_corrupt", "tender_cpvs")
 #var2<-c("cri_ro", "contractmonth", "years_apart_corrupt", "tender_cpvs")
 #var2<-c("cri_ro", "contractmonth", "years_apart_corrupt")
-var2<-c("cri_ro", "years_apart_corrupt", "buyer_id")
+var2<-c("cri_ro", "tender_id", "years_apart_corrupt", "domestic", "time_from_corrupted", "contractyear", "municipality" )
 
 #imbalance(group=main_ro_matching$cri_ro, data=main_ro_matching[var1])
 #summary(main_ro_matching$log_price)
@@ -516,7 +522,7 @@ main_ro$contractmonth <- as.factor(main_ro$contractmonth)
 main_ro$singleb [is.na(main_ro$singleb)] = 0
 
 #Matching of the treated group of contracts with the non-treated group, creating a control group. 
-main_ro_matching=main_ro%>%select(national, adm, buyer, time_from_corrupted, contractyear, contractmonth, cri_ro, singleb, tender_cpvs,log_price,buyer_id,buyer_buyertype,corrupt_dummy,years_apart_corrupt,municipality)
+main_ro_matching=main_ro%>%select(tender_id, domestic, time_from_corrupted, contractyear, contractmonth, singleb, tender_cpvs,log_price,buyer_id,buyer_buyertype,corrupt_dummy,years_apart_corrupt,municipality)
 main_ro_matching<- data.frame(na.omit(main_ro_matching))
 #main_ro_matching<- data.frame(main_ro_matching)
 
@@ -526,12 +532,12 @@ var1<-c("singleb","log_price")
 #var2<-c("singleb", "buyer_id", "contractmonth", "years_apart_corrupt", "tender_cpvs")
 #var2<-c("singleb", "contractmonth", "years_apart_corrupt", "tender_cpvs")
 #var2<-c("singleb", "contractmonth", "years_apart_corrupt")
-var2<-c("singleb", "years_apart_corrupt", "buyer_id")
+var2<-c("singleb", "tender_id", "years_apart_corrupt", "domestic", "time_from_corrupted", "contractyear", "municipality")
 
 #imbalance(group=main_ro_matching$singlebid, data=main_ro_matching[var1])
 summary(main_ro_matching$log_price)
 #Value cuts based on quartile
-valuecuts1_0 = c(12.48,13.51,14.46)
+valuecuts1_0 = c(12.47,13.70,15.03)
 #Variable grouping
 buyer_buyerType.grp<-list(c("REGIONAL_AUTHORITY", "REGIONAL_AGENCY", "UTILITIES"),c("OTHER"), c("PUBLIC_BODY"), c("NA",NA))
 #Compute the coarsened exact matching
