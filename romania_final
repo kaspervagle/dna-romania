@@ -1,11 +1,10 @@
-
 ## Importing relevant packages and data --------------------
 
 library(easypackages)
 packages("dplyr","foreach" ,"dplyr","rstatix", "data.table", "readxl", "readr", "stringr",
          "stringi", "openxlsx", "tidyr", "zoo", "ggplot2", "forcats","corrplot",
          "vroom", "foreign", "haven", "tidyverse", "purrr", "broom",
-         "modEvA", "stargazer","nlme","sjPlot","sjmisc","sjlabelled", "cem", "gridExtra")
+         "modEvA", "stargazer","nlme","sjPlot","sjmisc","sjlabelled", "cem", "gridExtra", "xtable")
 
 Sys.setenv(TZ = "GMT")
 memory.limit(size = 30000)
@@ -180,8 +179,7 @@ main_ro=main_ro%>%ungroup()%>% #Mutate add a new column
 main_ro <- main_ro %>% filter(!is.na(main_ro$years_apart_corrupt))
 
 #Filter only cities with more than 10 cases
-#main_ro=main_ro%>%ungroup()%>%distinct()#Remove duplicate. There was some!
-main_ro=main_ro%>%group_by(municipality)%>%filter(n()>10)#Remove municipalities with less than 10 contracts
+main_ro=main_ro%>%group_by(municipality)%>%filter(n()>10)
 
 main_ro$cri_ro <- as.numeric(main_ro$cri_ro)
 
@@ -219,7 +217,7 @@ cases_before <- main_ro%>% filter(corrupt_dummy== 0)
 cases_after <- main_ro%>% filter(corrupt_dummy== 1)
 ## Descriptive statistics------------------
 
-#otal amount of single bid contracts before and after treatment. 
+#Total amount of single bid contracts before and after treatment. 
 contingency=main_ro%>%
   group_by(years_apart_corrupt, singlebid)%>%
   tally()%>%spread(singlebid,n)
@@ -228,6 +226,11 @@ contingency=main_ro%>%
 contingency=main_ro%>%
   group_by(municipality,case1,singlebid)%>%
   tally()%>%spread(singlebid,n)
+
+contingency <- contingency%>% select(municipality,case1)
+contingency <- contingency[order(as.Date(contingency$case1)),]
+
+print(xtable(contingency, type = "latex"), file = "filename3.tex")
 
 library("writexl")
 write_xlsx(contingency,"~/Downloads\\contingency.xlsx")
@@ -399,15 +402,39 @@ matched_comp_sb_3
 
 tab<-map_df(list(matched_comp_sb_1,matched_comp_sb_2,matched_comp_sb_3), tidy)
 tab[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
-## Regression preparation - continue in STATA --------------
+## Creating variables for cities with 2 and 3 corruption cases -------------------
 
-#Write the pre matched data 
-write_xlsx(main_ro,path = "~/Downloads\\main_ro.xlsx")
+#Filter only cities with more than 10 cases
+main_ro_allcases=main_ro_allcases%>%group_by(municipality)%>%filter(n()>10)
 
-#Write the post matched data (Remember to run the code for either SB og CRI, depending on the DV stduied)
-write_xlsx(main_ro_matching_final, path = "~/Downloads\\main_ro_match.xlsx")
+#Filter cases before 2009-06-17
+main_ro_allcases<- main_ro_allcases %>% filter(case1 > "2009-06-17")
 
-## Analysis including cities with 2 and 3 corruption cases -------------------
+#preparing data set for regressions later
+main_ro_allcases$bidder_nuts2=substr(main_ro_allcases$bidder_nuts,start = 1,stop = 2)#bidder nuts code with 2 letter
+main_ro_allcases$domestic <- ifelse(main_ro_allcases$bidder_nuts2=="RO", "1", "0")
+main_ro_allcases$contractmonth <- as.factor(main_ro_allcases$contractmonth)
+
+#Take only first 2 number of cpv
+main_ro_allcases$tender_cpvs=str_sub(string = main_ro_allcases$tender_cpvs,start = 1,end = 2)
+
+#Case 1 dummy + time before/after corruption case
+main_ro_allcases=main_ro_allcases%>%ungroup()%>% #Mutate add a new column
+  mutate(corrupt_dummy=case_when( #A dummy indicating before and after the corruption case. 0 before, 1 after)
+    date_day> case1~1,
+    date_day< case1~0, 
+  ),
+  time_from_corrupted= as.Date(date_day)-as.Date(case1),#The difference between the date_day and the enforcement case1
+  years_apart_corrupt=case_when(
+    time_from_corrupted %between% c(0,365)~1,
+    time_from_corrupted %between% c(365,2*365)~2,
+    time_from_corrupted %between% c(2*365,3*365)~3,
+    time_from_corrupted %between% c(-365,0)~-1,
+    time_from_corrupted %between% c(-2*365,-365)~-2,
+    time_from_corrupted %between% c(-3*365,-2*365)~-3,
+  ),
+  months_apart_corrupt=floor(round(as.numeric(time_from_corrupted)/356*12))
+  )
 
 #Case 2 dummy + time before/after corruption case
 main_ro_allcases=main_ro_allcases%>%ungroup()%>% #Mutate add a new column
@@ -415,7 +442,7 @@ main_ro_allcases=main_ro_allcases%>%ungroup()%>% #Mutate add a new column
     date_day> case2~1,
     date_day< case2~0, 
   ),
-  time_from_corrupted_case2= as.Date(date_day)-as.Date(case2),#The difference between the date_day and the enforcement case1
+  time_from_corrupted_case2= as.Date(date_day)-as.Date(case2),#The difference between the date_day and the enforcement case2
   years_apart_corrupt_case2=case_when(
     time_from_corrupted_case2 %between% c(0,365)~1,
     time_from_corrupted_case2 %between% c(365,2*365)~2,
@@ -424,19 +451,16 @@ main_ro_allcases=main_ro_allcases%>%ungroup()%>% #Mutate add a new column
     time_from_corrupted_case2 %between% c(-2*365,-365)~-2,
     time_from_corrupted_case2 %between% c(-3*365,-2*365)~-3,
   ),
-  weeks_from_corrupted_case2= floor(as.numeric(time_from_corrupted_case2)/7
-  ),
-  months_from_corrupted_case2 =floor(round(as.numeric(time_from_corrupted_case2)/356*12))
-  
+  months_apart_corrupt_case2=floor(round(as.numeric(time_from_corrupted_case2)/356*12))
   )
-
+  
 #Case 3 dummy + time before/after corruption case
 main_ro_allcases=main_ro_allcases%>%ungroup()%>% #Mutate add a new column
   mutate(corrupt_dummy_case3=case_when( #A dummy indicating before and after the corruption case . 0 before, 1 after)
     date_day> case3~1,
     date_day< case3~0, 
   ),
-  time_from_corrupted_case3= as.Date(date_day)-as.Date(case3),#The difference between the date_day and the enforcement case1
+  time_from_corrupted_case3= as.Date(date_day)-as.Date(case3),#The difference between the date_day and the enforcement case3
   years_apart_corrupt_case3=case_when(
     time_from_corrupted_case3 %between% c(0,365)~1,
     time_from_corrupted_case3 %between% c(365,2*365)~2,
@@ -445,20 +469,206 @@ main_ro_allcases=main_ro_allcases%>%ungroup()%>% #Mutate add a new column
     time_from_corrupted_case3 %between% c(-2*365,-365)~-2,
     time_from_corrupted_case3 %between% c(-3*365,-2*365)~-3,
   ),
-  weeks_from_corrupted_case3= floor(as.numeric(time_from_corrupted_case3)/7
-  ),
-  months_from_corrupted_case3 =floor(round(as.numeric(time_from_corrupted_case3)/356*12))
-  
+  months_apart_corrupt_case3=floor(round(as.numeric(time_from_corrupted_case3)/356*12))
   )
 
-merge <- main_ro %>% select(tender_id, corrupt_dummy, time_from_corrupted, years_apart_corrupt)
+#Factor variable 0= before first treatment 1= while treatment 2= after last treatment 
+main_ro_allcases=main_ro_allcases%>%ungroup()%>% #Mutate add a new column
+  mutate(corrupt_factor=case_when(
+    (date_day< case1 & !(is.na(case1)) & is.na(case2) & is.na(case3)) ~ 0,
+    (date_day> case1 & !(is.na(case1)) & is.na(case2) & is.na(case3)) ~2,
+    
+    (date_day< case1 & !(is.na(case1)) & !(is.na(case2)) & is.na(case3)) ~ 0,
+    (date_day> case1 & date_day<case2 & !(is.na(case1)) & !(is.na(case2))& is.na(case3)) ~ 1,
+    (date_day> case2 & !(is.na(case1)) & !(is.na(case2)) & is.na(case3)) ~ 2, 
+    
+    (date_day< case1 & !(is.na(case1)) & !(is.na(case2)) & !(is.na(case3))) ~ 0,
+    (date_day> case1 & date_day<case3 & !(is.na(case1)) & !(is.na(case2)) & !(is.na(case3))) ~ 1,
+    (date_day> case3 & !(is.na(case1)) & !(is.na(case2)) & !(is.na(case3))) ~2,
+  ))
 
-#Include the case 1 dummy and time before and after treatment MISSING AND NOT WORKING AT THE MOMENT
-main_ro_allcases1 <- merge(main_ro_allcases, merge, by = c("municipality","tender_id"))
-
-#Remove contracts more than 3 years before or after the corruption case. 
-main_ro <- main_ro %>% filter(!is.na(main_ro$years_apart_corrupt))
+main_ro_allcases$corrupt_factor <- as.factor(main_ro_allcases$corrupt_factor)
 
 #Filter only cities with more than 10 cases
-#main_ro=main_ro%>%ungroup()%>%distinct()#Remove duplicate. There was some!
-main_ro=main_ro%>%group_by(municipality)%>%filter(n()>10)#Remove municipalities with less than 10 contracts
+main_ro_allcases=main_ro_allcases%>%group_by(municipality)%>%filter(n()>10)
+
+#Overview of cities studies and the date of corruption
+contingency=main_ro_allcases%>%
+  group_by(municipality,case1,case2,case3,singleb)%>%
+  tally()%>%spread(singleb,n)
+
+contingency <- contingency%>% select(municipality,case1,case2,case3)
+contingency <- contingency[order(as.Date(contingency$case1)),]
+
+print(xtable(contingency, type = "latex"), file = "filename3.tex")
+
+## Preparation for analysis including cities with 2 and 3 cases---------
+
+#Create dummies for cities that have a distance in time between case 1 and 2 of 1,2 and 3 years apart. 
+main_ro_allcases <- main_ro_allcases %>% ungroup() %>%
+  mutate(time_between_case1_case2 = as.Date(case2)-as.Date(case1),
+         case_apart1y=case_when(
+           time_between_case1_case2 %between% c(-365,365)~0,
+           time_between_case1_case2 < -365~1,
+           time_between_case1_case2 > 365~1,
+         ),
+         case_apart2y=case_when(
+           time_between_case1_case2 %between% c(2*-365,2*365)~0,
+           time_between_case1_case2 < 2*-365~1,
+           time_between_case1_case2 > 2*365~1,
+         ),
+         case_apart3y=case_when(
+           time_between_case1_case2 %between% c(3*-365,3*365)~0,
+           time_between_case1_case2 < 3*-365~1,
+           time_between_case1_case2 > 3*365~1,
+         ),
+    
+  )
+main_ro_allcases <- main_ro_allcases %>% ungroup() %>%
+  mutate(time_between_case2_case3 = as.Date(case3)-as.Date(case2),
+         case_apart1y_case2n3=case_when(
+           time_between_case2_case3 %between% c(-365,365)~0,
+           time_between_case2_case3 < -365~1,
+           time_between_case2_case3 > 365~1,
+         ),
+         case_apart2y_case2n3=case_when(
+           time_between_case2_case3 %between% c(2*-365,2*365)~0,
+           time_between_case2_case3 < 2*-365~1,
+           time_between_case2_case3 > 2*365~1,
+         ),
+         case_apart3y_case2n3=case_when(
+           time_between_case2_case3 %between% c(3*-365,3*365)~0,
+           time_between_case2_case3 < 3*-365~1,
+           time_between_case2_case3 > 3*365~1,
+         ),
+         
+  )
+
+## T-test CRI 1,2 and 3years including 2 and 3 cases-----------
+
+#Filtering out all cases that either have 1 corruption case, 2 cases with minimum 1 year between case1 and case2,
+#or three cases with minimum 1 year between case2 and case3 
+main_ro_allcases1 <- main_ro_allcases%>%
+  filter(case_apart1y==1 | case_apart1y_case2n3==1)
+
+temp <- main_ro_allcases%>%filter(is.na(case2))
+
+main_ro_allcases1 <- rbind(main_ro_allcases1, temp)
+
+#1 year before/after treatment  
+pre_1y <- main_ro_allcases1%>% filter(years_apart_corrupt==-1 | years_apart_corrupt_case2==-1 | years_apart_corrupt_case3==-1)
+post_1y <- main_ro_allcases1%>% filter(years_apart_corrupt==1 | years_apart_corrupt_case2==1 | years_apart_corrupt_case3==1)
+
+#Mean after - mean before t-test
+m1_c<-t.test(post_1y$cri_ro,pre_1y$cri_ro, conf.level = 0.95)
+
+#Filtering out all cases that either have 1 corruption case, 2 cases with minimum 2 year between case1 and case2,
+#or three cases with minimum 2 year between case2 and case3 
+main_ro_allcases1 <- main_ro_allcases%>%
+  filter(case_apart2y==1 | case_apart2y_case2n3==1)
+
+temp <- main_ro_allcases%>%filter(is.na(case2))
+
+main_ro_allcases1 <- rbind(main_ro_allcases1, temp)
+
+#2 years before/after treatment
+pre_2y <- main_ro_allcases1%>% filter(years_apart_corrupt==-1 
+                                      |years_apart_corrupt==-2
+                                      |years_apart_corrupt_case2==-1
+                                      |years_apart_corrupt_case2==-2
+                                      |years_apart_corrupt_case3==-1
+                                      |years_apart_corrupt_case3==-2)
+
+post_2y <- main_ro_allcases1%>% filter(years_apart_corrupt==1
+                                       |years_apart_corrupt==2
+                                       |years_apart_corrupt_case2==1
+                                       |years_apart_corrupt_case2==2
+                                       |years_apart_corrupt_case3==1
+                                       |years_apart_corrupt_case3==2)
+
+#Mean after - mean before t-test
+m2_c<-t.test(post_2y$cri_ro,pre_2y$cri_ro, conf.level = 0.95)
+
+#Filtering out all cases that either have 1 corruption case, 2 cases with minimum 3 year between case1 and case2,
+#or three cases with minimum 3 year between case2 and case3
+main_ro_allcases1 <- main_ro_allcases%>%
+  filter(case_apart3y==1 | case_apart3y_case2n3==1)
+
+temp <- main_ro_allcases%>%filter(is.na(case2))
+
+main_ro_allcases1 <- rbind(main_ro_allcases1, temp)
+
+#3 years before/after treatment
+pre_3y <- main_ro_allcases1%>% filter(years_apart_corrupt==-1 
+                                      |years_apart_corrupt==-2
+                                      |years_apart_corrupt==-3
+                                      |years_apart_corrupt_case2==-1
+                                      |years_apart_corrupt_case2==-2
+                                      |years_apart_corrupt_case2==-3
+                                      |years_apart_corrupt_case3==-1
+                                      |years_apart_corrupt_case3==-2
+                                      |years_apart_corrupt_case3==-3)
+
+post_3y <- main_ro_allcases1%>% filter(years_apart_corrupt==1
+                                       |years_apart_corrupt==2
+                                       |years_apart_corrupt==3
+                                       |years_apart_corrupt_case2==1
+                                       |years_apart_corrupt_case2==2
+                                       |years_apart_corrupt_case2==3
+                                       |years_apart_corrupt_case3==1
+                                       |years_apart_corrupt_case3==2
+                                       |years_apart_corrupt_case3==3)
+
+#Mean after - mean before t-test
+m3_c<-t.test(post_3y$cri_ro,pre_3y$cri_ro, conf.level = 0.95)
+
+#Summary of the t-tests
+tab1<-map_df(list(m1_c,m2_c,m3_c), tidy)
+tab1[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+
+
+
+## T-test SB 1,2 and 3 years including 2 and 3 cases------
+
+
+dfsinglebid=main_ro_allcases%>%
+  group_by(months_apart_corrupt,singleb)%>%
+  tally()%>%#Count singlebid by months
+  filter(!is.na(singleb))%>%#Remove NA
+  pivot_wider(names_from = singleb,values_from = n)%>%# Long to wide the singlebid for better mathematical handling
+  rename(not_single_bid="0",single_bid="1")%>%rowwise()%>%#Rename to make it clearer
+  mutate(sample_size=sum(not_single_bid+single_bid,na.rm = T),#Get sample size for each months
+         ratio_singleb=single_bid/sample_size)#%>%# Calculate the ratio of single bid contracts
+
+pre_3y <- dfsinglebid[58:94,]
+pre_2y <- dfsinglebid[70:94,]
+pre_1y <- dfsinglebid[82:94,]
+
+post_3y <- dfsinglebid[94:106,]
+post_2y <- dfsinglebid[94:118,]
+post_1y <- dfsinglebid[94:130,]
+
+#Before - after test
+#m3_s<-t.test(pre_3y$ratio_singleb,post_3y$ratio_singleb, conf.level = 0.95)
+#m2_s<-t.test(pre_2y$ratio_singleb,post_2y$ratio_singleb, conf.level = 0.95)
+#m1_s<-t.test(pre_1y$ratio_singleb,post_1y$ratio_singleb, conf.level = 0.95)
+
+#After-before test
+m3_s<-t.test(post_3y$ratio_singleb,pre_3y$ratio_singleb, conf.level = 0.95)
+m2_s<-t.test(post_2y$ratio_singleb,pre_2y$ratio_singleb, conf.level = 0.95)
+m1_s<-t.test(post_1y$ratio_singleb,pre_1y$ratio_singleb, conf.level = 0.95)
+m3_s
+
+tab2<-map_df(list(m1_s,m2_s,m3_s), tidy)
+tab2[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+## Regression preparation - continue in STATA --------------
+
+#Write the pre matched data municipalities with 1 corruption case only
+write_xlsx(main_ro,path = "~/Downloads\\main_ro.xlsx")
+
+#Write the post matched data (Remember to run the code for either SB og CRI, depending on the DV studied)
+#municipalities with 1 corruption case only
+write_xlsx(main_ro_matching_final, path = "~/Downloads\\main_ro_match.xlsx")
+
+#Write the Unmatched data set with all municipalities (With more than one case)
+write_xlsx(main_ro_allcases, path = "~/Downloads\\main_ro_allcases.xlsx")
