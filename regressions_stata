@@ -1,144 +1,152 @@
-ssc install reghdfe
-ssc install ftools
 
-// Pre match data
+cd "C:\Users\s13476\OneDrive - Norges Handelshøyskole\My papers\Paper 3\Data\stata"
+
+// Unmatced data 
 import excel "C:\Users\s13476\Documents\Downloads\main_ro.xlsx", sheet("Sheet1") firstrow clear
 
-// Post match data 
-import excel "C:\Users\s13476\Documents\Downloads\main_ro_match.xlsx", sheet("Sheet1") firstrow clear
 
-gen buyer1 =real(buyer)
-gen national1 =real(national)
-gen adm1 =real(adm)
-//encode singleb, gen(singleb2)
+encode domestic, gen(domestic1)
 encode contractmonth, gen(contractmonth1)
 encode municipality, gen(municipality1)
-//encode contractyear, gen(contractyear1)
+encode buyer_buyertype, gen(buyer)
+encode tender_cpvs, gen(cpv)
+encode tender_id, gen(tenderid)
+encode bidder_nuts4, gen(bid_nuts)
+encode buyer_postcode2, gen(buyer_post)
 
+//Labeling variable names
+lab var cri_ro			"Corruption Risk Index"
+lab var singleb			"Single Bid"
+lab var corrupt_dummy	"Treatment"
+lab var log_price		"Price (log)"
+lab var domestic1		"Domestic"
 
-// LM (Linear model) as CRI is a variable with values between 0 and 1. 
-// with clustering on municipalities 
-regress cri_ro corrupt_dummy, cluster(municipality)
-estimates store m1, title(Model 1)
-
-regress cri_ro corrupt_dummy log_price contractyear contractmonth1, cluster(municipality)
-estimates store m2, title(Model 2)
-
-regress cri_ro corrupt_dummy log_price contractyear contractmonth1 national1 buyer1, cluster(municipality)
-estimates store m3, title(Model 3)
-
-estout m1 m2 m3, cells(b(star fmt(3)) se(par fmt(2)))  ///
-   legend label varlabels(_cons constant)              ///
-   stats(r2 df_r bic)
-
-   
-// Without clustering on municipality   
-regress cri_ro corrupt_dummy
-estimates store m1, title(Model 1)
-
-regress cri_ro corrupt_dummy log_price contractyear contractmonth1
-estimates store m2, title(Model 2)
-
-regress cri_ro corrupt_dummy log_price contractyear contractmonth1 national1 buyer1
-estimates store m3, title(Model 3)
-
-estout m1 m2 m3, cells(b(star fmt(3)) se(par fmt(2)))  ///
-   legend label varlabels(_cons constant)              ///
-   stats(r2 df_r bic)   
-   
-
-// Generalized linear model Single bid regressions with clusters on municipality. Use GLM as singlebid is a binary variable. 
-
-glm singleb corrupt_dummy log_price, family(binomial 1) link(logit) cluster(municipality)
-estimates store m1, title(Model 1)
-
-
-glm singleb corrupt_dummy log_price contractyear contractmonth1, family(binomial 1) link(logit) cluster(municipality)
-estimates store m2, title(Model 2)
-
-glm singleb corrupt_dummy log_price contractyear contractmonth1 national1 buyer1, family(binomial 1) link(logit) cluster(municipality)
-estimates store m3, title(Model 3)
-
-estout m1 m2 m3, cells(b(star fmt(3)) se(par fmt(2)))  ///
-   legend label varlabels(_cons constant)              ///
-   stats(r2 df_r bic)
-
- // Withouth clustering on municipalities   
-   
- glm singleb corrupt_dummy log_price, family(binomial 1) link(logit) 
-estimates store m1, title(Model 1)
-
-
-glm singleb corrupt_dummy log_price contractyear contractmonth1, family(binomial 1) link(logit) 
-estimates store m2, title(Model 2)
-
-glm singleb corrupt_dummy log_price contractyear contractmonth1 national1 buyer1, family(binomial 1) link(logit) 
-estimates store m3, title(Model 3)
-
-estout m1 m2 m3, cells(b(star fmt(3)) se(par fmt(2)))  ///
-   legend label varlabels(_cons constant)              ///
-   stats(r2 df_r bic)
-
-   
-   
-//fixed effects CRI
+// REGRESSION TABLE 1  
+//Linear model fixed effects CRI 
 // with clustering 
-reghdfe cri_ro corrupt_dummy, noabsorb cluster(municipality)
+est clear
+reghdfe cri_ro corrupt_dummy, noabsorb cluster(municipality) 
 estimates store m1, title(Model 1)
 
-reghdfe cri_ro corrupt_dummy, absorb(contractyear) cluster(municipality)
+reghdfe cri_ro corrupt_dummy log_price, absorb(contractyear) cluster(municipality) 
 estimates store m2, title(Model 2)
 
-reghdfe cri_ro corrupt_dummy log_price time_from_corrupted, absorb(buyer_buyertype contractmonth contractyear) cluster(municipality)
+reghdfe cri_ro corrupt_dummy log_price domestic1, absorb(contractmonth1 contractyear) cluster(municipality) 
 estimates store m3, title(Model 3)
 
-estout m1 m2 m3, cells(b(star fmt(3)) se(par fmt(2)))  ///
-   legend label varlabels(_cons constant)              ///
-   stats(r2 df_r bic)
+reghdfe cri_ro corrupt_dummy log_price domestic1 i.buyer, absorb(contractmonth1 contractyear buyer_post cpv) cluster(municipality) 
+estimates store m4, title(Model 4)
 
-//withouth clustering 
-reghdfe cri_ro corrupt_dummy, noabsorb
-estimates store m1, title(Model 1)
-
-reghdfe cri_ro corrupt_dummy, absorb(contractyear) 
-estimates store m2, title(Model 2)
-
-reghdfe cri_ro corrupt_dummy log_price time_from_corrupted, absorb(buyer_buyertype contractmonth contractyear) 
-estimates store m3, title(Model 3)
-
-estout m1 m2 m3, cells(b(star fmt(3)) se(par fmt(2)))  ///
-   legend label varlabels(_cons constant)              ///
-   stats(r2 df_r bic)
-
- //fixed effects Singlebid
-// with clustering 
-reghdfe singleb corrupt_dummy, noabsorb cluster(municipality)
-estimates store m1, title(Model 1)
-
-reghdfe singleb corrupt_dummy, absorb(contractyear) cluster(municipality)
-estimates store m2, title(Model 2)
-
-reghdfe singleb corrupt_dummy log_price time_from_corrupted, absorb(buyer_buyertype contractmonth contractyear) cluster(municipality)
-estimates store m3, title(Model 3)
-
-estout m1 m2 m3, cells(b(star fmt(3)) se(par fmt(2)))  ///
-   legend label varlabels(_cons constant)              ///
-   stats(r2 df_r bic)
-
-//withouth clustering 
-reghdfe singleb corrupt_dummy, noabsorb
-estimates store m1, title(Model 1)
-
-reghdfe singleb corrupt_dummy, absorb(contractyear) 
-estimates store m2, title(Model 2)
-
-reghdfe singleb corrupt_dummy log_price time_from_corrupted, absorb(buyer_buyertype contractmonth contractyear) 
-estimates store m3, title(Model 3)
-
-estout m1 m2 m3, cells(b(star fmt(3)) se(par fmt(2)))  ///
-   legend label varlabels(_cons constant)              ///
-   stats(r2 df_r bic)  
+estout m1 m2 m3 m4, cells(b(star fmt(4)) p(par fmt(4)))  ///
+	legend label varlabels(_cons constant)              ///
+	stats(r2 N) ///
+	starlevels(* 0.10 ** 0.05 *** 0.01)
    
+esttab m1 m2 m3 m4 using "./regression1.tex", replace f ///
+	b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	stats(r2 N) ///
+	booktabs alignment(D{.}{.}{-1})
+	
 
+// REGRESSION TABLE 2 
+// Logistic regression simulating FE Single bid	
+eststo raw: logistic singleb corrupt_dummy, cluster(municipality1)
+eststo margin: margins, dydx(*) post
+estimates store m1, title(Model 1)
 
+eststo raw: logistic singleb corrupt_dummy log_price, cluster(municipality1)
+eststo margin: margins, dydx(*) post
+estimates store m2, title(Model 2)
 
+eststo raw: logistic singleb corrupt_dummy log_price domestic1 i.contractyear , cluster(municipality1)
+eststo margin: margins, dydx(*) post
+estimates store m3, title(Model 3)
+
+eststo raw: logistic singleb corrupt_dummy log_price domestic1  i.buyer i.cpv i.contractmonth1 i.contractyear i.buyer_post, cluster(municipality1)
+eststo margin: margins, dydx(*) post
+estimates store m4, title(Model 4)
+
+estout m1 m2 m3 m4, cells(b(star fmt(3)) p(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 df_r bic)
+   
+esttab m1 m2 m3 m4 using "./regression2.tex", replace f ///
+	b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	stats(r2 N) ///
+	booktabs alignment(D{.}{.}{-1})   	
+	
+		
+	
+// MATCHED DATA
+// Remember to run the matching on either SB or CRI. This will also influence the labeling and which regressions to run
+cd "C:\Users\s13476\OneDrive - Norges Handelshøyskole\My papers\Paper 3\Data\stata"
+import excel "C:\Users\s13476\Documents\Downloads\main_ro_match.xlsx", sheet("Sheet1") firstrow clear
+   
+encode domestic, gen(domestic1)
+encode contractmonth, gen(contractmonth1)
+encode municipality, gen(municipality1)
+encode buyer_buyertype, gen(buyer)
+encode tender_cpvs, gen(cpv)
+encode tender_id, gen(tenderid)
+encode bidder_nuts5, gen(bid_nuts)
+encode buyer_postcode2, gen(buyer_post)
+
+//Labeling variable names
+lab var cri_ro			"Corruption Risk Index"
+lab var singleb			"Single Bid"
+lab var corrupt_dummy	"Treatment"
+lab var log_price		"Price (log)"
+lab var domestic1		"Domestic"	
+
+// REGRESSION TABLE X  
+//Linear model fixed effects CRI 
+// with clustering 
+est clear
+reghdfe cri_ro corrupt_dummy, noabsorb cluster(municipality) 
+estimates store m1, title(Model 1)
+
+reghdfe cri_ro corrupt_dummy log_price, absorb(contractyear) cluster(municipality) 
+estimates store m2, title(Model 2)
+
+reghdfe cri_ro corrupt_dummy log_price domestic1, absorb(contractmonth1 contractyear) cluster(municipality) 
+estimates store m3, title(Model 3)
+
+reghdfe cri_ro corrupt_dummy log_price domestic1 i.buyer, absorb(contractmonth1 contractyear buyer_post cpv) cluster(municipality) 
+estimates store m4, title(Model 4)
+
+estout m1 m2 m3 m4, cells(b(star fmt(4)) p(par fmt(4)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 N) ///
+   starlevels(* 0.10 ** 0.05 *** 0.01)
+   
+esttab m1 m2 m3 m4 using "./regression3.tex", replace f ///
+	b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	stats(r2 N) ///
+	booktabs alignment(D{.}{.}{-1})
+	
+// Logistic regression simulating FE Single bid
+//Matched data	
+eststo raw: logistic singleb corrupt_dummy, cluster(municipality1)
+eststo margin: margins, dydx(*) post
+estimates store m1, title(Model 1)
+
+eststo raw: logistic singleb corrupt_dummy log_price, cluster(municipality1)
+eststo margin: margins, dydx(*) post
+estimates store m2, title(Model 2)
+
+eststo raw: logistic singleb corrupt_dummy log_price domestic1 i.contractyear , cluster(municipality1)
+eststo margin: margins, dydx(*) post
+estimates store m3, title(Model 3)
+
+eststo raw: logistic singleb corrupt_dummy log_price domestic1  i.buyer i.cpv i.contractmonth1 i.contractyear i.buyer_post, cluster(municipality1)
+eststo margin: margins, dydx(*) post
+estimates store m4, title(Model 4)
+
+estout m1 m2 m3 m4, cells(b(star fmt(3)) p(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 df_r bic)
+   
+esttab m1 m2 m3 m4 using "./regression4.tex", replace f ///
+	b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	stats(r2 N) ///
+	booktabs alignment(D{.}{.}{-1})   
