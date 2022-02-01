@@ -4,7 +4,7 @@ library(easypackages)
 packages("dplyr","foreach" ,"dplyr","rstatix", "data.table", "readxl", "readr", "stringr",
          "stringi", "openxlsx", "tidyr", "zoo", "ggplot2", "forcats","corrplot",
          "vroom", "foreign", "haven", "tidyverse", "purrr", "broom",
-         "modEvA", "stargazer","nlme","sjPlot","sjmisc","sjlabelled", "cem", "gridExtra", "xtable")
+         "modEvA", "stargazer","nlme","sjPlot","sjmisc","sjlabelled", "cem", "gridExtra", "xtable", "writexl", "psych")
 
 Sys.setenv(TZ = "GMT")
 memory.limit(size = 30000)
@@ -27,11 +27,19 @@ raw_ro1 <- fread(file = "RO_May21.csv",
                             "aw_date",
                             "lot_bidscount",
                             "cri_ro",
-                            "bidder_nuts"),
+                            "buyer_nuts",
+                            "bidder_nuts",
+                            "tender_proceduretype",
+                            "submp",
+                            "notice_url"),
                  encoding='UTF-8')
 
 #Import the enforcement data
 enforcement_ro <- read_excel("enforcement_ro.xlsx")
+
+#Overview of all the variables in the raw csv file. 
+vartop <- read.csv("RO_May21.csv",nrows = 3,header=TRUE, sep=",")
+vartop <- data.frame(vartop)
 
 ## Data processing and cleaning ------------------------------------------
 names(raw_ro1)
@@ -93,6 +101,16 @@ enforcement_ro_collapsed <- enforcement_ro_edited %>%
   summarize_all(paste, collapse=",") %>%
   separate(col= "date_of_indictment", into= c("case1","case2","case3","case4","case5","case6"), sep = ",")
 
+enf_ro <- enforcement_ro_collapsed%>% select(municipality,case1,case2,case3)
+enf_ro <- enf_ro[order(enf_ro$municipality),]
+enf_ro$matched <- "Yes"
+enf_ro$less10 <- "No"
+
+print(xtable(enf_ro, type = "latex"), file = "municipalityfiltering.tex")
+
+line<-unique(main_ro$municipality)
+line<-as.data.frame(line)
+
 #Dummy for treated municipalities 
 treated_cities <- enforcement_ro_collapsed$municipality
 
@@ -151,7 +169,7 @@ main_ro=main_ro%>%filter(contractyear>2008)
 main_ro_allcases <- main_ro
 
 #Remove municipality with more than one case
-main_ro=main_ro%>%filter(is.na(case2))
+#main_ro=main_ro%>%filter(is.na(case2))
 
 ## Creating variables--------------------------------
 
@@ -178,8 +196,14 @@ main_ro=main_ro%>%ungroup()%>% #Mutate add a new column
 #Remove contracts more than 3 years before or after the corruption case. 
 main_ro <- main_ro %>% filter(!is.na(main_ro$years_apart_corrupt))
 
+#Remove contracts that are more than 2 years before and after
+#main_ro <- main_ro %>% filter(years_apart_corrupt %between% c(-3,3))
+
 #Filter only cities with more than 10 cases
 main_ro=main_ro%>%group_by(municipality)%>%filter(n()>10)
+
+line<-unique(main_ro$municipality)
+line<-as.data.frame(line)
 
 main_ro$cri_ro <- as.numeric(main_ro$cri_ro)
 
@@ -191,10 +215,17 @@ main_ro$singlebid=NA
 main_ro[which(main_ro$lot_bidscount==1),"singlebid"]=1
 main_ro[which(main_ro$lot_bidscount>1),"singlebid"]=0
 
-#Creating the 2 and 3 letter bidder nuts
-main_ro$bidder_nuts2=substr(main_ro$bidder_nuts,start = 1,stop = 2)#bidder nuts code with 2 letter
-main_ro$bidder_nuts3=substr(main_ro$bidder_nuts,start = 1,stop = 3)#bidder nuts code with 3 letters
+#Create a main city 2 letter post code
+main_ro$buyer_postcode2=substr(main_ro$buyer_postcode,start = 1,stop = 2)#post code with 2 letter
 
+#Creating the 2 and 3 letter buyer nuts
+main_ro$buyer_nuts2=substr(main_ro$buyer_nuts,start = 1,stop = 2)#bidder nuts code with 2 letter
+main_ro$buyer_nuts3=substr(main_ro$buyer_nuts,start = 1,stop = 3)#bidder nuts code with 3 letters
+main_ro$buyer_nuts4=substr(main_ro$buyer_nuts,start = 1,stop = 4)#bidder nuts code with 4 letters
+main_ro$buyer_nuts5=substr(main_ro$buyer_nuts,start = 1,stop = 5)#bidder nuts code with 5 letters
+
+#Bidder nuts - for domestic vs. foreign bidders
+main_ro$bidder_nuts2=substr(main_ro$bidder_nuts,start = 1,stop = 2)#bidder nuts code with 2 letter
 
 window_length=30#Mean by 30 days
 main_ro$time_from_corrupted=as.numeric(main_ro$time_from_corrupted)
@@ -206,7 +237,7 @@ meaned_main_ro<-main_ro%>%group_by(window)%>%
 meaned_main_ro$window=(meaned_main_ro$window*window_length+window_length/2)+min(main_ro$time_from_corrupted)
 meaned_main_ro=meaned_main_ro%>%rename(time_from_corrupted=window)
 
-main_ro<- main_ro %>% filter(case1 > "2009-06-17")
+#main_ro<- main_ro %>% filter(case1 > "2009-06-17")
 main_ro$domestic <- ifelse(main_ro$bidder_nuts2=="RO", "1", "0")
 main_ro$contractmonth <- as.factor(main_ro$contractmonth)
 
@@ -215,6 +246,34 @@ options(scipen = 50)
 #Number of cases before and after treatment   
 cases_before <- main_ro%>% filter(corrupt_dummy== 0)
 cases_after <- main_ro%>% filter(corrupt_dummy== 1)
+
+## Creating binary variables for procedure type, submission periode, call for tenders--------------
+
+#Create dummy for procedure and submission periode
+main_ro <- main_ro %>% 
+  mutate(procedure=case_when(
+    tender_proceduretype == "NEGOTIATED_WITHOUT_PUBLICATION"~1,
+    tender_proceduretype == "NEGOTIATED"~1,
+    tender_proceduretype == "RESTRICTED"~1,
+    tender_proceduretype == "OUTRIGHT_AWARD"~0,
+    tender_proceduretype == "APPROACHING_BIDDERS"~0,
+    tender_proceduretype == "COMPETITIVE_DIALOG"~0,
+    tender_proceduretype == "NEGOTIATED_WITH_PUBLICATION"~0,
+    tender_proceduretype == "OPEN"~0,
+    tender_proceduretype == "DESIGN_CONTEST"~0,
+    tender_proceduretype == "OTHER"~0
+    ),
+    submission=case_when(
+      submp %between% c(2,32)~1,
+      submp %between% c(33,365)~0
+    )
+    
+  )
+  
+#Create dummy for call for tenders
+main_ro$tendercall <- ifelse(grepl("ted", main_ro$notice_url), "0", "1")
+
+  
 ## Descriptive statistics------------------
 
 #Total amount of single bid contracts before and after treatment. 
@@ -232,10 +291,33 @@ contingency <- contingency[order(as.Date(contingency$case1)),]
 
 print(xtable(contingency, type = "latex"), file = "filename3.tex")
 
-library("writexl")
 write_xlsx(contingency,"~/Downloads\\contingency.xlsx")
 
-## T-test CRI unmatched all municipalities 1,2,3y---------------
+# Descriptive development of CRI - monthly mean 3 years before and after
+
+window_length=30#Mean by 30 days
+main_ro$time_from_corrupted=as.numeric(main_ro$time_from_corrupted)
+main_ro$window=findInterval(x = main_ro$time_from_corrupted,
+                            seq(min(main_ro$time_from_corrupted),max(main_ro$time_from_corrupted),
+                                window_length))
+meaned_main_ro<-main_ro%>%group_by(window)%>%
+  summarise(mean_cri_ro=mean(cri_ro))
+meaned_main_ro$window=(meaned_main_ro$window*window_length+window_length/2)+min(main_ro$time_from_corrupted)
+meaned_main_ro=meaned_main_ro%>%rename(time_from_corrupted=window)
+meaned_main_ro$month <- round(meaned_main_ro$time_from_corrupted/30)
+#meaned_main_ro$week <- round(meaned_main_ro$time_from_corrupted/7)
+
+p=ggplot(meaned_main_ro,
+         aes(y=mean_cri_ro,x=month))+
+  #geom_point(alpha=0,5)+
+  labs(y= "CRI monthly mean", x = "Months before/after treatment")+
+  geom_line(data = meaned_main_ro,aes(x=month,y=mean_cri_ro),color="red")+
+  geom_vline(xintercept = 0,linetype=2, colour="blue")+
+  theme_bw()
+ggsave(plot = p,filename = "time_from_corrupted.png",width = 10,height = 8)
+
+
+## T-test CRI unmatched 1,2,3y---------------
 pre_3y <- main_ro%>% filter(years_apart_corrupt==-3|years_apart_corrupt==-2|years_apart_corrupt==-1)
 pre_2y <- main_ro%>% filter(years_apart_corrupt==-2|years_apart_corrupt==-1)
 pre_1y <- main_ro%>% filter(years_apart_corrupt==-1)
@@ -258,7 +340,7 @@ m1_c<-t.test(post_1y$cri_ro,pre_1y$cri_ro, conf.level = 0.95)
 tab1<-map_df(list(m1_c,m2_c,m3_c), tidy)
 tab1[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
 
-## T-test SB unmatched all municipalities 1,2,3y----------------
+## T-test SB unmatched 1,2,3y----------------
 
 dfsinglebid=main_ro%>%
   group_by(months_from_corrupted,singlebid)%>%
@@ -290,22 +372,120 @@ m3_s
 
 tab2<-map_df(list(m1_s,m2_s,m3_s), tidy)
 tab2[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+
+## T-test procedure type unmatched-------------
+dfprocedure=main_ro%>%
+  group_by(months_from_corrupted,procedure)%>%
+  tally()%>%#Count singlebid by months
+  filter(!is.na(procedure))%>%#Remove NA
+  pivot_wider(names_from = procedure,values_from = n)%>%# Long to wide the singlebid for better mathematical handling
+  rename(risky_procedure="1",not_risky_procedure="0")%>%rowwise()%>%#Rename to make it clearer
+  mutate(sample_size=sum(risky_procedure+not_risky_procedure,na.rm = T),#Get sample size for each months
+         ratio_procedure=risky_procedure/sample_size)#%>%# Calculate the ratio of single bid contracts
+
+pre_3y <- dfprocedure[2:37,]
+pre_2y <- dfprocedure[14:37,]
+pre_1y <- dfprocedure[26:37,]
+
+post_3y <- dfprocedure[38:50,]
+post_2y <- dfprocedure[38:62,]
+post_1y <- dfprocedure[38:74,]
+
+#Before - after test
+#m3_s<-t.test(pre_3y$ratio_singleb,post_3y$ratio_singleb, conf.level = 0.95)
+#m2_s<-t.test(pre_2y$ratio_singleb,post_2y$ratio_singleb, conf.level = 0.95)
+#m1_s<-t.test(pre_1y$ratio_singleb,post_1y$ratio_singleb, conf.level = 0.95)
+
+#After-before test
+m3_s<-t.test(post_3y$ratio_procedure,pre_3y$ratio_procedure, conf.level = 0.95)
+m2_s<-t.test(post_2y$ratio_procedure,pre_2y$ratio_procedure, conf.level = 0.95)
+m1_s<-t.test(post_1y$ratio_procedure,pre_1y$ratio_procedure, conf.level = 0.95)
+m3_s
+
+tab2<-map_df(list(m1_s,m2_s,m3_s), tidy)
+tab2[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+
+## T-test submission period unmatched-------------
+dfsubmission=main_ro%>%
+  group_by(months_from_corrupted,submission)%>%
+  tally()%>%#Count singlebid by months
+  filter(!is.na(submission))%>%#Remove NA
+  pivot_wider(names_from = submission,values_from = n)%>%# Long to wide the singlebid for better mathematical handling
+  rename(short_submission="1",long_submission="0")%>%rowwise()%>%#Rename to make it clearer
+  mutate(sample_size=sum(short_submission+long_submission,na.rm = T),#Get sample size for each months
+         ratio_submission=short_submission/sample_size)#%>%# Calculate the ratio of single bid contracts
+
+pre_3y <- dfsubmission[2:37,]
+pre_2y <- dfsubmission[14:37,]
+pre_1y <- dfsubmission[26:37,]
+
+post_3y <- dfsubmission[38:50,]
+post_2y <- dfsubmission[38:62,]
+post_1y <- dfsubmission[38:74,]
+
+#Before - after test
+#m3_s<-t.test(pre_3y$ratio_singleb,post_3y$ratio_singleb, conf.level = 0.95)
+#m2_s<-t.test(pre_2y$ratio_singleb,post_2y$ratio_singleb, conf.level = 0.95)
+#m1_s<-t.test(pre_1y$ratio_singleb,post_1y$ratio_singleb, conf.level = 0.95)
+
+#After-before test
+m3_s<-t.test(post_3y$ratio_submission,pre_3y$ratio_submission, conf.level = 0.95)
+m2_s<-t.test(post_2y$ratio_submission,pre_2y$ratio_submission, conf.level = 0.95)
+m1_s<-t.test(post_1y$ratio_submission,pre_1y$ratio_submission, conf.level = 0.95)
+m3_s
+
+tab2<-map_df(list(m1_s,m2_s,m3_s), tidy)
+tab2[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+
+## T-test tender call unmatched-------------
+dftendercall=main_ro%>%
+  group_by(months_from_corrupted,tendercall)%>%
+  tally()%>%#Count singlebid by months
+  filter(!is.na(tendercall))%>%#Remove NA
+  pivot_wider(names_from = tendercall,values_from = n)%>%# Long to wide the singlebid for better mathematical handling
+  rename(no_tendercall="1",tendercall="0")%>%rowwise()%>%#Rename to make it clearer
+  mutate(sample_size=sum(no_tendercall+tendercall,na.rm = T),#Get sample size for each months
+         ratio_tendercall=no_tendercall/sample_size)#%>%# Calculate the ratio of single bid contracts
+
+pre_3y <- dftendercall[2:37,]
+pre_2y <- dftendercall[14:37,]
+pre_1y <- dftendercall[26:37,]
+
+post_3y <- dftendercall[38:50,]
+post_2y <- dftendercall[38:62,]
+post_1y <- dftendercall[38:74,]
+
+#Before - after test
+#m3_s<-t.test(pre_3y$ratio_singleb,post_3y$ratio_singleb, conf.level = 0.95)
+#m2_s<-t.test(pre_2y$ratio_singleb,post_2y$ratio_singleb, conf.level = 0.95)
+#m1_s<-t.test(pre_1y$ratio_singleb,post_1y$ratio_singleb, conf.level = 0.95)
+
+#After-before test
+m3_s<-t.test(post_3y$ratio_tendercall,pre_3y$ratio_tendercall, conf.level = 0.95)
+m2_s<-t.test(post_2y$ratio_tendercall,pre_2y$ratio_tendercall, conf.level = 0.95)
+m1_s<-t.test(post_1y$ratio_tendercall,pre_1y$ratio_tendercall, conf.level = 0.95)
+m3_s
+
+tab2<-map_df(list(m1_s,m2_s,m3_s), tidy)
+tab2[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+main_ro$tendercall <- as.numeric(main_ro$tendercall)
+
 ## Matching (CEM) CRI-----------
 
 #Preparing the data frame
-main_ro_matching=main_ro%>%select(tender_id, domestic, time_from_corrupted, contractyear, contractmonth,cri_ro,tender_cpvs,log_price,buyer_id,buyer_buyertype,corrupt_dummy,years_apart_corrupt,municipality)
+main_ro_matching=main_ro%>%select(tender_id, domestic, time_from_corrupted, contractyear, contractmonth,cri_ro,tender_cpvs,log_price,buyer_buyertype,corrupt_dummy,years_apart_corrupt,buyer_nuts4,buyer_postcode2, municipality)
 
 #Cleaning 
 main_ro_matching<- data.frame(na.omit(main_ro_matching))
 main_ro_matching<-main_ro_matching %>% filter(!is.na(cri_ro))
 
 var1<-c("cri_ro","log_price")
-var2<-c("cri_ro", "tender_id", "years_apart_corrupt", "domestic", "time_from_corrupted", "contractyear", "municipality" )
+var2<-c("cri_ro", "tender_id", "years_apart_corrupt", "domestic", "time_from_corrupted", "contractyear", "buyer_nuts4", "municipality"  )
 
 #imbalance(group=main_ro_matching$cri_ro, data=main_ro_matching[var1])
 summary(main_ro_matching$log_price)
 #Value cuts based on quartile
-valuecuts1_0 = c(12.47,13.70,15.03)
+valuecuts1_0 = c(12.54,13.86,15.09)
 
 #Variable grouping
 buyer_buyerType.grp<-list(c("REGIONAL_AUTHORITY", "REGIONAL_AGENCY", "UTILITIES"),c("OTHER"), c("PUBLIC_BODY"), c("NA",NA))
@@ -321,7 +501,7 @@ main_ro_matching$aftermatchweight <- mat1_0$w
 main_ro_matching_final <- main_ro_matching %>% filter(aftermatchtreat == TRUE)
 
 
-## T-test CRI matched all municipalities 1,2,3y ------------------
+## T-test CRI matched 1,2,3y ------------------
 match_pre_1 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == 1)
 match_post_1 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == 1)
 
@@ -351,7 +531,7 @@ main_ro$contractmonth <- as.factor(main_ro$contractmonth)
 main_ro$singleb [is.na(main_ro$singleb)] = 0
 
 #Matching of the treated group of contracts with the non-treated group, creating a control group. 
-main_ro_matching=main_ro%>%select(tender_id, domestic, time_from_corrupted, contractyear, contractmonth, singleb, tender_cpvs,log_price,buyer_id,buyer_buyertype,corrupt_dummy,years_apart_corrupt,municipality)
+main_ro_matching=main_ro%>%select(tender_id, domestic, time_from_corrupted, contractyear, contractmonth, singleb, tender_cpvs,log_price,buyer_buyertype,corrupt_dummy,years_apart_corrupt,municipality,buyer_nuts4,buyer_postcode2)
 
 #Cleaning
 main_ro_matching<- data.frame(na.omit(main_ro_matching))
@@ -359,13 +539,13 @@ main_ro_matching<-main_ro_matching %>% filter(!is.na(singleb))
 
 #Defining groups of variables
 var1<-c("singleb","log_price")
-var2<-c("singleb", "tender_id", "years_apart_corrupt", "domestic", "time_from_corrupted", "contractyear", "municipality")
+var2<-c("singleb", "tender_id", "years_apart_corrupt", "domestic", "time_from_corrupted", "contractyear", "buyer_nuts4","buyer_postcode2")
 
 #imbalance(group=main_ro_matching$singlebid, data=main_ro_matching[var1])
 summary(main_ro_matching$log_price)
 
 #Value cuts based on quartile
-valuecuts1_0 = c(12.47,13.70,15.03)
+valuecuts1_0 = c(12.54,13.86,15.09)
 
 #Variable grouping
 buyer_buyerType.grp<-list(c("REGIONAL_AUTHORITY", "REGIONAL_AGENCY", "UTILITIES"),c("OTHER"), c("PUBLIC_BODY"), c("NA",NA))
@@ -380,7 +560,7 @@ main_ro_matching$aftermatchweight <- mat1_0$w
 #Filter out unmatched
 main_ro_matching_final <- main_ro_matching %>% filter(aftermatchtreat == TRUE)
 
-## T-test SB matched all municipalities 1,2,3y ------------------
+## T-test SB matched 1,2,3y ------------------
 match_pre_1 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == 1)
 match_post_1 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == 1)
 
@@ -402,6 +582,187 @@ matched_comp_sb_3
 
 tab<-map_df(list(matched_comp_sb_1,matched_comp_sb_2,matched_comp_sb_3), tidy)
 tab[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+
+## Matching (CEM) procedure type ------------------------------------
+
+#data preparation
+main_ro$contractmonth <- as.factor(main_ro$contractmonth)
+main_ro$procedure [is.na(main_ro$procedure)] = 0
+
+#Matching of the treated group of contracts with the non-treated group, creating a control group. 
+main_ro_matching=main_ro%>%select(tender_id, domestic, time_from_corrupted, contractyear, contractmonth, procedure, tender_cpvs,log_price,buyer_buyertype,corrupt_dummy,years_apart_corrupt,municipality,buyer_nuts4,buyer_postcode2)
+
+#Cleaning
+main_ro_matching<- data.frame(na.omit(main_ro_matching))
+main_ro_matching<-main_ro_matching %>% filter(!is.na(procedure))
+
+#Defining groups of variables
+var1<-c("procedure","log_price")
+var2<-c("procedure", "tender_id", "years_apart_corrupt", "domestic", "time_from_corrupted", "contractyear", "buyer_nuts4","buyer_postcode2")
+
+#imbalance(group=main_ro_matching$singlebid, data=main_ro_matching[var1])
+summary(main_ro_matching$log_price)
+
+#Value cuts based on quartile
+valuecuts1_0 = c(12.54,13.86,15.09)
+
+#Variable grouping
+buyer_buyerType.grp<-list(c("REGIONAL_AUTHORITY", "REGIONAL_AGENCY", "UTILITIES"),c("OTHER"), c("PUBLIC_BODY"), c("NA",NA))
+
+#Compute the coarsened exact matching
+mat1_0 <- cem(treatment = "corrupt_dummy",drop = var2, grouping = list(buyer_buyertype= buyer_buyerType.grp),cutpoints = list(log_price=valuecuts1_0), eval.imbalance = F,data = main_ro_matching)
+table(mat1_0$matched)
+
+main_ro_matching$aftermatchtreat <- mat1_0$matched
+main_ro_matching$aftermatchweight <- mat1_0$w
+
+#Filter out unmatched
+main_ro_matching_final <- main_ro_matching %>% filter(aftermatchtreat == TRUE)
+main_ro_matching_final$procedure <- as.numeric(main_ro_matching_final$procedure)
+
+## T-test procedure matched 1,2,3y ------------------
+match_pre_1 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == 1)
+match_post_1 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == 1)
+
+match_pre_2 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == 1 | years_apart_corrupt == 2)
+match_post_2 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == 1 | years_apart_corrupt == 2 )
+
+match_pre_3 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == -3 | years_apart_corrupt == 1 | years_apart_corrupt == 2 | years_apart_corrupt == 3)
+match_post_3 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == -3 | years_apart_corrupt == 1 | years_apart_corrupt == 2 | years_apart_corrupt == 3 )
+
+# mean after - mean before 1,2 and 3 years
+matched_comp_sb_1 <- t.test( match_post_1$procedure,match_pre_1$procedure, paired = FALSE, conf.level =0.95)
+matched_comp_sb_1
+
+matched_comp_sb_2 <- t.test( match_post_2$procedure,match_pre_2$procedure, paired = FALSE, conf.level =0.95)
+matched_comp_sb_2
+
+matched_comp_sb_3 <- t.test( match_post_3$procedure,match_pre_3$procedure, paired = FALSE, conf.level =0.95)
+matched_comp_sb_3
+
+tab<-map_df(list(matched_comp_sb_1,matched_comp_sb_2,matched_comp_sb_3), tidy)
+tab[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+
+## Matching (CEM) submission ------------------------------------
+
+#data preparation
+main_ro$contractmonth <- as.factor(main_ro$contractmonth)
+main_ro$submission [is.na(main_ro$submission)] = 0
+
+#Matching of the treated group of contracts with the non-treated group, creating a control group. 
+main_ro_matching=main_ro%>%select(tender_id, domestic, time_from_corrupted, contractyear, contractmonth, submission, tender_cpvs,log_price,buyer_buyertype,corrupt_dummy,years_apart_corrupt,municipality,buyer_nuts4,buyer_postcode2)
+
+#Cleaning
+main_ro_matching<- data.frame(na.omit(main_ro_matching))
+main_ro_matching<-main_ro_matching %>% filter(!is.na(submission))
+
+#Defining groups of variables
+var1<-c("submission","log_price")
+var2<-c("submission", "tender_id", "years_apart_corrupt", "domestic", "time_from_corrupted", "contractyear", "buyer_nuts4","buyer_postcode2")
+
+#imbalance(group=main_ro_matching$singlebid, data=main_ro_matching[var1])
+summary(main_ro_matching$log_price)
+
+#Value cuts based on quartile
+valuecuts1_0 = c(12.54,13.86,15.09)
+
+#Variable grouping
+buyer_buyerType.grp<-list(c("REGIONAL_AUTHORITY", "REGIONAL_AGENCY", "UTILITIES"),c("OTHER"), c("PUBLIC_BODY"), c("NA",NA))
+
+#Compute the coarsened exact matching
+mat1_0 <- cem(treatment = "corrupt_dummy",drop = var2, grouping = list(buyer_buyertype= buyer_buyerType.grp),cutpoints = list(log_price=valuecuts1_0), eval.imbalance = F,data = main_ro_matching)
+table(mat1_0$matched)
+
+main_ro_matching$aftermatchtreat <- mat1_0$matched
+main_ro_matching$aftermatchweight <- mat1_0$w
+
+#Filter out unmatched
+main_ro_matching_final <- main_ro_matching %>% filter(aftermatchtreat == TRUE)
+main_ro_matching_final$submission <- as.numeric(main_ro_matching_final$submission)
+
+## T-test submission matched 1,2,3y ------------------
+match_pre_1 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == 1)
+match_post_1 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == 1)
+
+match_pre_2 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == 1 | years_apart_corrupt == 2)
+match_post_2 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == 1 | years_apart_corrupt == 2 )
+
+match_pre_3 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == -3 | years_apart_corrupt == 1 | years_apart_corrupt == 2 | years_apart_corrupt == 3)
+match_post_3 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == -3 | years_apart_corrupt == 1 | years_apart_corrupt == 2 | years_apart_corrupt == 3 )
+
+# mean after - mean before 1,2 and 3 years
+matched_comp_sb_1 <- t.test( match_post_1$submission,match_pre_1$submission, paired = FALSE, conf.level =0.95)
+matched_comp_sb_1
+
+matched_comp_sb_2 <- t.test( match_post_2$submission,match_pre_2$submission, paired = FALSE, conf.level =0.95)
+matched_comp_sb_2
+
+matched_comp_sb_3 <- t.test( match_post_3$submission,match_pre_3$submission, paired = FALSE, conf.level =0.95)
+matched_comp_sb_3
+
+tab<-map_df(list(matched_comp_sb_1,matched_comp_sb_2,matched_comp_sb_3), tidy)
+tab[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+
+## Matching (CEM) tendercall ------------------------------------
+
+#data preparation
+main_ro$contractmonth <- as.factor(main_ro$contractmonth)
+main_ro$tendercall [is.na(main_ro$tendercall)] = 0
+
+#Matching of the treated group of contracts with the non-treated group, creating a control group. 
+main_ro_matching=main_ro%>%select(tender_id, domestic, time_from_corrupted, contractyear, contractmonth, tendercall, tender_cpvs,log_price,buyer_buyertype,corrupt_dummy,years_apart_corrupt,municipality,buyer_nuts4,buyer_postcode2)
+
+#Cleaning
+main_ro_matching<- data.frame(na.omit(main_ro_matching))
+main_ro_matching<-main_ro_matching %>% filter(!is.na(tendercall))
+
+#Defining groups of variables
+var1<-c("tendercall","log_price")
+var2<-c("tendercall", "tender_id", "years_apart_corrupt", "domestic", "time_from_corrupted", "contractyear", "buyer_nuts4","buyer_postcode2")
+
+#imbalance(group=main_ro_matching$singlebid, data=main_ro_matching[var1])
+summary(main_ro_matching$log_price)
+
+#Value cuts based on quartile
+valuecuts1_0 = c(12.54,13.86,15.09)
+
+#Variable grouping
+buyer_buyerType.grp<-list(c("REGIONAL_AUTHORITY", "REGIONAL_AGENCY", "UTILITIES"),c("OTHER"), c("PUBLIC_BODY"), c("NA",NA))
+
+#Compute the coarsened exact matching
+mat1_0 <- cem(treatment = "corrupt_dummy",drop = var2, grouping = list(buyer_buyertype= buyer_buyerType.grp),cutpoints = list(log_price=valuecuts1_0), eval.imbalance = F,data = main_ro_matching)
+table(mat1_0$matched)
+
+main_ro_matching$aftermatchtreat <- mat1_0$matched
+main_ro_matching$aftermatchweight <- mat1_0$w
+
+#Filter out unmatched
+main_ro_matching_final <- main_ro_matching %>% filter(aftermatchtreat == TRUE)
+main_ro_matching_final$tendercall <- as.numeric(main_ro_matching_final$tendercall)
+
+## T-test tendercall matched 1,2,3y ------------------
+match_pre_1 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == 1)
+match_post_1 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == 1)
+
+match_pre_2 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == 1 | years_apart_corrupt == 2)
+match_post_2 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == 1 | years_apart_corrupt == 2 )
+
+match_pre_3 <- main_ro_matching_final %>% filter(corrupt_dummy == 0 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == -3 | years_apart_corrupt == 1 | years_apart_corrupt == 2 | years_apart_corrupt == 3)
+match_post_3 <- main_ro_matching_final %>% filter(corrupt_dummy == 1 & years_apart_corrupt == -1 | years_apart_corrupt == -2 | years_apart_corrupt == -3 | years_apart_corrupt == 1 | years_apart_corrupt == 2 | years_apart_corrupt == 3 )
+
+# mean after - mean before 1,2 and 3 years
+matched_comp_sb_1 <- t.test( match_post_1$tendercall,match_pre_1$tendercall, paired = FALSE, conf.level =0.95)
+matched_comp_sb_1
+
+matched_comp_sb_2 <- t.test( match_post_2$tendercall,match_pre_2$tendercall, paired = FALSE, conf.level =0.95)
+matched_comp_sb_2
+
+matched_comp_sb_3 <- t.test( match_post_3$tendercall,match_pre_3$tendercall, paired = FALSE, conf.level =0.95)
+matched_comp_sb_3
+
+tab<-map_df(list(matched_comp_sb_1,matched_comp_sb_2,matched_comp_sb_3), tidy)
+tab[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
+
 ## Creating variables for cities with 2 and 3 corruption cases -------------------
 
 #Filter only cities with more than 10 cases
@@ -412,6 +773,7 @@ main_ro_allcases<- main_ro_allcases %>% filter(case1 > "2009-06-17")
 
 #preparing data set for regressions later
 main_ro_allcases$bidder_nuts2=substr(main_ro_allcases$bidder_nuts,start = 1,stop = 2)#bidder nuts code with 2 letter
+main_ro_allcases$buyer_nuts4=substr(main_ro_allcases$buyer_nuts,start = 1,stop = 4)#buyer nuts code with 4 letter
 main_ro_allcases$domestic <- ifelse(main_ro_allcases$bidder_nuts2=="RO", "1", "0")
 main_ro_allcases$contractmonth <- as.factor(main_ro_allcases$contractmonth)
 
@@ -667,8 +1029,36 @@ tab2[c("estimate", "statistic", "p.value", "conf.low", "conf.high")]
 write_xlsx(main_ro,path = "~/Downloads\\main_ro.xlsx")
 
 #Write the post matched data (Remember to run the code for either SB og CRI, depending on the DV studied)
-#municipalities with 1 corruption case only
+#municipalities which include only the first corruption case, for municipalities with more than  1 corruption case
 write_xlsx(main_ro_matching_final, path = "~/Downloads\\main_ro_match.xlsx")
 
 #Write the Unmatched data set with all municipalities (With more than one case)
 write_xlsx(main_ro_allcases, path = "~/Downloads\\main_ro_allcases.xlsx")
+
+## Regressions descriptive--------------
+## Descriptive statistics of input and output variable in the regression
+
+
+d.summary.extended <- main_ro %>%
+  select(cri_ro, singleb, log_price) %>%
+  psych::describe(quant=c(.25,.75)) %>%
+  as_tibble(rownames="rowname")  %>%
+  print()
+
+d.summary <- d.summary.extended %>%
+  select(var=rowname, n, mean, min, q25=Q0.25, median, q75=Q0.75, max, sd) %>%
+  print()
+
+xtable(d.summary, type = "latex", file = "descriptiveregression.tex")
+
+
+
+
+
+## Political party overview
+
+enforcement_ro$year <- substr(enforcement_ro$date_of_indictment, 1,4)
+
+contingency=enforcement_ro%>%
+  group_by(year,political_party)%>%
+  tally()%>%spread(political_party,n)
