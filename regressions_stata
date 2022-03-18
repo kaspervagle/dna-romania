@@ -11,14 +11,17 @@ encode municipality, gen(municipality1)
 encode buyer_buyertype, gen(buyer)
 encode tender_cpvs, gen(cpv)
 encode tender_id, gen(tenderid)
-encode bidder_nuts4, gen(bid_nuts)
+encode buyer_nuts4, gen(buy_nuts)
 encode buyer_postcode2, gen(buyer_post)
 
 //Labeling variable names
 lab var cri_ro			"Corruption Risk Index"
 lab var singleb			"Single Bid"
+lab var procedure		"Procedure Type"
+lab var tendercall		"No tender call"
+lab var submission		"Short submission time"
 lab var corrupt_dummy	"Treatment"
-lab var log_price		"Price (log)"
+lab var log_price		"Contract value"
 lab var domestic1		"Domestic"
 
 // REGRESSION TABLE 1  
@@ -28,24 +31,34 @@ est clear
 reghdfe cri_ro corrupt_dummy, noabsorb cluster(municipality) 
 estimates store m1, title(Model 1)
 
-reghdfe cri_ro corrupt_dummy log_price, absorb(contractyear) cluster(municipality) 
+reghdfe cri_ro corrupt_dummy log_price, absorb(contractmonth1) cluster(municipality) 
 estimates store m2, title(Model 2)
 
-reghdfe cri_ro corrupt_dummy log_price domestic1, absorb(contractmonth1 contractyear) cluster(municipality) 
+reghdfe cri_ro corrupt_dummy log_price domestic1, absorb(contractmonth1 buy_nuts) cluster(municipality) 
 estimates store m3, title(Model 3)
 
-reghdfe cri_ro corrupt_dummy log_price domestic1 i.buyer, absorb(contractmonth1 contractyear buyer_post cpv) cluster(municipality) 
+reghdfe cri_ro corrupt_dummy log_price domestic1 b4.buyer, absorb(contractmonth1 buy_nuts cpv) cluster(municipality) base
 estimates store m4, title(Model 4)
 
-estout m1 m2 m3 m4, cells(b(star fmt(4)) p(par fmt(4)))  ///
-	legend label varlabels(_cons constant)              ///
+reghdfe cri_ro corrupt_dummy log_price domestic1 b4.buyer, absorb(contractmonth1 buy_nuts cpv buyer_post) cluster(municipality) base
+estimates store m5, title(Model 5)
+estimates store m5x, title(CRI)
+
+estout m1 m2 m3 m4 m5, cells(b(star fmt(4)) p(par fmt(4)))  ///
+	legend label varlabels(_cons Constant)              ///
 	stats(r2 N) ///
 	starlevels(* 0.10 ** 0.05 *** 0.01)
    
-esttab m1 m2 m3 m4 using "./regression1.tex", replace f ///
+esttab m1 m2 m3 m4 m5 using "./regression1.tex", replace f ///
 	b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
 	stats(r2 N) ///
 	booktabs alignment(D{.}{.}{-1})
+
+// 2 year window	
+//esttab m1 m2 m3 m4 m5 using "./regression1_2.tex", replace f ///
+	//b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	//stats(r2 N) ///
+	//booktabs alignment(D{.}{.}{-1})	
 	
 
 // REGRESSION TABLE 2 
@@ -54,27 +67,159 @@ eststo raw: logistic singleb corrupt_dummy, cluster(municipality1)
 eststo margin: margins, dydx(*) post
 estimates store m1, title(Model 1)
 
-eststo raw: logistic singleb corrupt_dummy log_price, cluster(municipality1)
-eststo margin: margins, dydx(*) post
+eststo raw: logistic singleb corrupt_dummy log_price i.contractmonth1, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price) post
 estimates store m2, title(Model 2)
 
-eststo raw: logistic singleb corrupt_dummy log_price domestic1 i.contractyear , cluster(municipality1)
-eststo margin: margins, dydx(*) post
+eststo raw: logistic singleb corrupt_dummy log_price domestic1 i.contractmonth1 i.buy_nuts , cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1) post
 estimates store m3, title(Model 3)
 
-eststo raw: logistic singleb corrupt_dummy log_price domestic1  i.buyer i.cpv i.contractmonth1 i.contractyear i.buyer_post, cluster(municipality1)
-eststo margin: margins, dydx(*) post
+eststo raw: logistic singleb corrupt_dummy log_price domestic1  b4.buyer i.contractmonth1 i.buy_nuts i.cpv, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1  b4.buyer) post
 estimates store m4, title(Model 4)
 
-estout m1 m2 m3 m4, cells(b(star fmt(3)) p(par fmt(2)))  ///
+eststo raw: logistic singleb corrupt_dummy log_price domestic1  b4.buyer i.contractmonth1 i.buy_nuts i.cpv buyer_post, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1  b4.buyer) post
+estimates store m5, title(Model 5)
+estimates store m4x, title(Singel bid)
+
+estout m1 m2 m3 m4 m5, cells(b(star fmt(3)) p(par fmt(2)))  ///
    legend label varlabels(_cons constant)              ///
-   stats(r2 df_r bic)
+   stats(r2 N)
    
-esttab m1 m2 m3 m4 using "./regression2.tex", replace f ///
+esttab m1 m2 m3 m4 m5 using "./regression2.tex", replace f ///
 	b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
-	stats(r2 N) ///
+	stats(N) ///
 	booktabs alignment(D{.}{.}{-1})   	
+
+// 2 Year regression	
+//esttab m1 m2 m3 m4 m5 using "./regression2_2.tex", replace f ///
+	//b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	//stats(N) ///
+	//booktabs alignment(D{.}{.}{-1})
 	
+// Logistic regression simulating FE procedure	
+eststo raw: logistic procedure corrupt_dummy, cluster(municipality1)
+eststo margin: margins, dydx(*) post
+estimates store m1, title(Model 1)
+
+eststo raw: logistic procedure corrupt_dummy log_price i.contractmonth1, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price) post
+estimates store m2, title(Model 2)
+
+eststo raw: logistic procedure corrupt_dummy log_price domestic1 i.contractmonth1 i.buy_nuts , cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1) post
+estimates store m3, title(Model 3)
+
+eststo raw: logistic procedure corrupt_dummy log_price domestic1  b4.buyer i.contractmonth1 i.buy_nuts i.cpv, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1  b4.buyer) post
+estimates store m4, title(Model 4)
+
+eststo raw: logistic procedure corrupt_dummy log_price domestic1  b4.buyer i.contractmonth1 i.buy_nuts i.cpv buyer_post, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1  b4.buyer) post
+estimates store m5, title(Model 5)
+estimates store m1x, title(Non-open procedure)
+
+estout m1 m2 m3 m4 m5, cells(b(star fmt(3)) p(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 N)
+   
+esttab m1 m2 m3 m4 m5 using "./regression3.tex", replace f ///
+	b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	stats(N) ///
+	booktabs alignment(D{.}{.}{-1})   	
+
+// 2 Year regression	
+//esttab m1 m2 m3 m4 m5 using "./regression3_2.tex", replace f ///
+	//b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	//stats(N) ///
+	//booktabs alignment(D{.}{.}{-1})
+	
+// Logistic regression simulating FE submission	
+eststo raw: logistic submission corrupt_dummy, cluster(municipality1)
+eststo margin: margins, dydx(*) post
+estimates store m1, title(Model 1)
+
+eststo raw: logistic submission corrupt_dummy log_price i.contractmonth1, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price) post
+estimates store m2, title(Model 2)
+
+eststo raw: logistic submission corrupt_dummy log_price domestic1 i.contractmonth1 i.buy_nuts , cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1) post
+estimates store m3, title(Model 3)
+
+eststo raw: logistic submission corrupt_dummy log_price domestic1  b4.buyer i.contractmonth1 i.buy_nuts i.cpv, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1  b4.buyer) post
+estimates store m4, title(Model 4)
+
+eststo raw: logistic submission corrupt_dummy log_price domestic1  b4.buyer i.contractmonth1 i.buy_nuts i.cpv buyer_post, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1  b4.buyer) post
+estimates store m5, title(Model 5)
+estimates store m2x, title(Short submission periode)
+
+estout m1 m2 m3 m4 m5, cells(b(star fmt(3)) p(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 N)
+   
+esttab m1 m2 m3 m4 m5 using "./regression4.tex", replace f ///
+	b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	stats(N) ///
+	booktabs alignment(D{.}{.}{-1})   	
+
+// 2 Year regression	
+//esttab m1 m2 m3 m4 m5 using "./regression4_2.tex", replace f ///
+	//b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	//stats(N) ///
+	//booktabs alignment(D{.}{.}{-1})
+	
+// Logistic regression simulating FE tendercall	
+eststo raw: logistic tendercall corrupt_dummy, cluster(municipality1)
+eststo margin: margins, dydx(*) post
+estimates store m1, title(Model 1)
+
+eststo raw: logistic tendercall corrupt_dummy log_price i.contractmonth1, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price) post
+estimates store m2, title(Model 2)
+
+eststo raw: logistic tendercall corrupt_dummy log_price domestic1 i.contractmonth1 i.buy_nuts , cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1) post
+estimates store m3, title(Model 3)
+
+eststo raw: logistic tendercall corrupt_dummy log_price domestic1  b4.buyer i.contractmonth1 i.buy_nuts i.cpv, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1  b4.buyer) post
+estimates store m4, title(Model 4)
+
+eststo raw: logistic tendercall corrupt_dummy log_price domestic1  b4.buyer i.contractmonth1 i.buy_nuts i.cpv buyer_post, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1  b4.buyer) post
+estimates store m5, title(Model 5)
+estimates store m3x, title(No tender call)
+
+
+estout m1 m2 m3 m4 m5, cells(b(star fmt(3)) p(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 N)
+   
+esttab m1 m2 m3 m4 m5 using "./regression5.tex", replace f ///
+	b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	stats(N) ///
+	booktabs alignment(D{.}{.}{-1})   	
+
+// 2 Year regression	
+//esttab m1 m2 m3 m4 m5 using "./regression5_2.tex", replace f ///
+	//b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	//stats(N) ///
+	//booktabs alignment(D{.}{.}{-1})
+	
+// Compiled all models into one output
+estout m1x m2x m3x m4x m5x, cells(b(star fmt(3)) p(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 N)
+   
+esttab m1x m2x m3x m4x m5x using "./regression11.tex", replace f ///
+	b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	stats(N) ///
+	booktabs alignment(D{.}{.}{-1})	
 		
 	
 // MATCHED DATA
@@ -88,14 +233,18 @@ encode municipality, gen(municipality1)
 encode buyer_buyertype, gen(buyer)
 encode tender_cpvs, gen(cpv)
 encode tender_id, gen(tenderid)
-encode bidder_nuts5, gen(bid_nuts)
+encode buyer_nuts4, gen(buy_nuts)
 encode buyer_postcode2, gen(buyer_post)
+
 
 //Labeling variable names
 lab var cri_ro			"Corruption Risk Index"
-lab var singleb			"Single Bid"
+lab var singleb			"Single bid"
+lab var procedure		"Procedure Type"
+lab var tendercall		"No tender call"
+lab var submission		"Short submission time"
 lab var corrupt_dummy	"Treatment"
-lab var log_price		"Price (log)"
+lab var log_price		"Contract value"
 lab var domestic1		"Domestic"	
 
 // REGRESSION TABLE X  
@@ -105,24 +254,34 @@ est clear
 reghdfe cri_ro corrupt_dummy, noabsorb cluster(municipality) 
 estimates store m1, title(Model 1)
 
-reghdfe cri_ro corrupt_dummy log_price, absorb(contractyear) cluster(municipality) 
+reghdfe cri_ro corrupt_dummy log_price, absorb(contractmonth1) cluster(municipality) 
 estimates store m2, title(Model 2)
 
-reghdfe cri_ro corrupt_dummy log_price domestic1, absorb(contractmonth1 contractyear) cluster(municipality) 
+reghdfe cri_ro corrupt_dummy log_price domestic1, absorb(contractmonth1 buy_nuts) cluster(municipality) 
 estimates store m3, title(Model 3)
 
-reghdfe cri_ro corrupt_dummy log_price domestic1 i.buyer, absorb(contractmonth1 contractyear buyer_post cpv) cluster(municipality) 
+reghdfe cri_ro corrupt_dummy log_price domestic1 b4.buyer, absorb(contractmonth1 buy_nuts cpv) cluster(municipality) base
 estimates store m4, title(Model 4)
 
-estout m1 m2 m3 m4, cells(b(star fmt(4)) p(par fmt(4)))  ///
-   legend label varlabels(_cons constant)              ///
-   stats(r2 N) ///
-   starlevels(* 0.10 ** 0.05 *** 0.01)
+reghdfe cri_ro corrupt_dummy log_price domestic1 b4.buyer, absorb(contractmonth1 buy_nuts cpv buyer_post) cluster(municipality) base
+estimates store m5, title(Model 5)
+estimates store m5y, title(CRI)
+
+estout m1 m2 m3 m4 m5, cells(b(star fmt(4)) p(par fmt(4)))  ///
+	legend label varlabels(_cons Constant)              ///
+	stats(r2 N) ///
+	starlevels(* 0.10 ** 0.05 *** 0.01)
    
-esttab m1 m2 m3 m4 using "./regression3.tex", replace f ///
+esttab m1 m2 m3 m4 m5 using "./regression6.tex", replace f ///
 	b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
 	stats(r2 N) ///
 	booktabs alignment(D{.}{.}{-1})
+
+// 2 year window	
+//esttab m1 m2 m3 m4 m5 using "./regression6_2.tex", replace f ///
+	//b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	//stats(r2 N) ///
+	//booktabs alignment(D{.}{.}{-1})
 	
 // Logistic regression simulating FE Single bid
 //Matched data	
@@ -130,23 +289,158 @@ eststo raw: logistic singleb corrupt_dummy, cluster(municipality1)
 eststo margin: margins, dydx(*) post
 estimates store m1, title(Model 1)
 
-eststo raw: logistic singleb corrupt_dummy log_price, cluster(municipality1)
-eststo margin: margins, dydx(*) post
+eststo raw: logistic singleb corrupt_dummy log_price i.contractmonth1, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price) post
 estimates store m2, title(Model 2)
 
-eststo raw: logistic singleb corrupt_dummy log_price domestic1 i.contractyear , cluster(municipality1)
-eststo margin: margins, dydx(*) post
+eststo raw: logistic singleb corrupt_dummy log_price domestic1 i.contractmonth1 i.buy_nuts , cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1) post
 estimates store m3, title(Model 3)
 
-eststo raw: logistic singleb corrupt_dummy log_price domestic1  i.buyer i.cpv i.contractmonth1 i.contractyear i.buyer_post, cluster(municipality1)
-eststo margin: margins, dydx(*) post
+eststo raw: logistic singleb corrupt_dummy log_price domestic1  b4.buyer i.contractmonth1 i.buy_nuts i.cpv, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1  b4.buyer) post
 estimates store m4, title(Model 4)
 
-estout m1 m2 m3 m4, cells(b(star fmt(3)) p(par fmt(2)))  ///
+eststo raw: logistic singleb corrupt_dummy log_price domestic1  b4.buyer i.contractmonth1 i.buy_nuts i.cpv buyer_post, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1  b4.buyer) post
+estimates store m5, title(Model 5)
+estimates store m4y, title(Single bid)
+
+estout m1 m2 m3 m4 m5, cells(b(star fmt(3)) p(par fmt(2)))  ///
    legend label varlabels(_cons constant)              ///
-   stats(r2 df_r bic)
+   stats(r2 N)
    
-esttab m1 m2 m3 m4 using "./regression4.tex", replace f ///
+esttab m1 m2 m3 m4 m5 using "./regression7.tex", replace f ///
 	b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
-	stats(r2 N) ///
-	booktabs alignment(D{.}{.}{-1})   
+	stats(N) ///
+	booktabs alignment(D{.}{.}{-1})   	  
+	
+// 2 year regrssion
+//esttab m1 m2 m3 m4 m5 using "./regression7_2.tex", replace f ///
+	//b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	//stats(N) ///
+	//booktabs alignment(D{.}{.}{-1})
+	
+// Logistic regression simulating FE no tender call
+//Matched data	
+eststo raw: logistic tendercall corrupt_dummy, cluster(municipality1)
+eststo margin: margins, dydx(*) post
+estimates store m1, title(Model 1)
+
+eststo raw: logistic tendercall corrupt_dummy log_price i.contractmonth1, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price) post
+estimates store m2, title(Model 2)
+
+eststo raw: logistic tendercall corrupt_dummy log_price domestic1 i.contractmonth1 i.buy_nuts , cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1) post
+estimates store m3, title(Model 3)
+
+eststo raw: logistic tendercall corrupt_dummy log_price domestic1  b4.buyer i.contractmonth1 i.buy_nuts i.cpv, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1  b4.buyer) post
+estimates store m4, title(Model 4)
+
+eststo raw: logistic tendercall corrupt_dummy log_price domestic1  b4.buyer i.contractmonth1 i.buy_nuts i.cpv buyer_post, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1  b4.buyer) post
+estimates store m5, title(Model 5)
+estimates store m3y, title(Tender call)
+
+estout m1 m2 m3 m4 m5, cells(b(star fmt(3)) p(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 N)
+   
+esttab m1 m2 m3 m4 m5 using "./regression8.tex", replace f ///
+	b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	stats(N) ///
+	booktabs alignment(D{.}{.}{-1})   	  
+	
+// 2 year regrssion
+//esttab m1 m2 m3 m4 m5 using "./regression8_2.tex", replace f ///
+	//b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	//stats(N) ///
+	//booktabs alignment(D{.}{.}{-1})
+	
+// Logistic regression simulating FE procedure
+//Matched data	
+eststo raw: logistic procedure corrupt_dummy, cluster(municipality1)
+eststo margin: margins, dydx(*) post
+estimates store m1, title(Model 1)
+
+eststo raw: logistic procedure corrupt_dummy log_price i.contractmonth1, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price) post
+estimates store m2, title(Model 2)
+
+eststo raw: logistic procedure corrupt_dummy log_price domestic1 i.contractmonth1 i.buy_nuts , cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1) post
+estimates store m3, title(Model 3)
+
+eststo raw: logistic procedure corrupt_dummy log_price domestic1  b4.buyer i.contractmonth1 i.buy_nuts i.cpv, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1  b4.buyer) post
+estimates store m4, title(Model 4)
+
+eststo raw: logistic procedure corrupt_dummy log_price domestic1  b4.buyer i.contractmonth1 i.buy_nuts i.cpv buyer_post, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1  b4.buyer) post
+estimates store m5, title(Model 5)
+estimates store m1y, title(Procedure)
+
+estout m1 m2 m3 m4 m5, cells(b(star fmt(3)) p(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 N)
+   
+esttab m1 m2 m3 m4 m5 using "./regression9.tex", replace f ///
+	b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	stats(N) ///
+	booktabs alignment(D{.}{.}{-1})   	  
+	
+// 2 year regrssion
+//esttab m1 m2 m3 m4 m5 using "./regression9_2.tex", replace f ///
+	//b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	//stats(N) ///
+	//booktabs alignment(D{.}{.}{-1})
+	
+// Logistic regression simulating FE submission
+//Matched data	
+eststo raw: logistic submission corrupt_dummy, cluster(municipality1)
+eststo margin: margins, dydx(*) post
+estimates store m1, title(Model 1)
+
+eststo raw: logistic submission corrupt_dummy log_price i.contractmonth1, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price) post
+estimates store m2, title(Model 2)
+
+eststo raw: logistic submission corrupt_dummy log_price domestic1 i.contractmonth1 i.buy_nuts , cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1) post
+estimates store m3, title(Model 3)
+
+eststo raw: logistic submission corrupt_dummy log_price domestic1  b4.buyer i.contractmonth1 i.buy_nuts i.cpv, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1  b4.buyer) post
+estimates store m4, title(Model 4)
+
+eststo raw: logistic submission corrupt_dummy log_price domestic1  b4.buyer i.contractmonth1 i.buy_nuts i.cpv buyer_post, cluster(municipality1)
+eststo margin: margins, dydx(corrupt_dummy log_price domestic1  b4.buyer) post
+estimates store m5, title(Model 5)
+estimates store m2y, title(Submission)
+
+estout m1 m2 m3 m4 m5, cells(b(star fmt(3)) p(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 N)
+   
+esttab m1 m2 m3 m4 m5 using "./regression10.tex", replace f ///
+	b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	stats(N) ///
+	booktabs alignment(D{.}{.}{-1})   	  
+	
+// 2 year regrssion
+//esttab m1 m2 m3 m4 m5 using "./regression10_2.tex", replace f ///
+	//b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	//stats(N) ///
+	//booktabs alignment(D{.}{.}{-1})
+	
+//Summary of all model 5 results from all the matched data regressions
+estout m1y m2y m3y m4y m5y, cells(b(star fmt(3)) p(par fmt(2)))  ///
+   legend label varlabels(_cons constant)              ///
+   stats(r2 N)
+   
+esttab m1y m2y m3y m4y m5y using "./regression12.tex", replace f ///
+	b(3) se(3) nomtitle label star(* 0.10 ** 0.05 *** 0.01) ///
+	stats(N) ///
+	booktabs alignment(D{.}{.}{-1}) 
