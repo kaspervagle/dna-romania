@@ -80,10 +80,24 @@ enforcement_ro$municipality=enforcement_ro$municipality%>%
   str_replace_all(pattern = "-",replacement = " ")%>% #Replace dashes by whitespace
   str_replace_all(pattern = "\\s+",replacement = " ") #Replace multiple whitespace by only one
 
+# Political affiliation 
+
+enforcement_ro = enforcement_ro %>%
+  mutate(politics=case_when(
+    political_party=="PSD"~0,
+    political_party=="PNL"~1,
+    political_party=="PDL"~1,
+    political_party=="PC"~1,
+    political_party=="PNG-CD"~1,
+    political_party=="UNPR"~0,
+    political_party=="USL"~0,
+  )
+  )
+
 #Delete rows that correspond to the same case, so that one corruption case only occur once.
 enforcement_ro <- distinct(enforcement_ro,nr_of_penal_decision, .keep_all=TRUE)
 enforcement_ro_edited<-enforcement_ro
-enforcement_ro_edited<-enforcement_ro_edited%>%select(municipality,date_of_indictment)
+enforcement_ro_edited<-enforcement_ro_edited%>%select(municipality,date_of_indictment,politics)
 
 #Filter out corruption cases that happened before 2009 (before we have procurement data)
 procurment_start <- as.POSIXct("2009-01-01")
@@ -247,6 +261,29 @@ options(scipen = 50)
 cases_before <- main_ro%>% filter(corrupt_dummy== 0)
 cases_after <- main_ro%>% filter(corrupt_dummy== 1)
 
+#Cleaning ut the multiple entries in "politics"
+
+main_ro=main_ro%>%
+  mutate(politics1=case_when(
+    grepl("1",politics)~1,
+    grepl("0",politics)~0
+    
+  )
+    
+  )
+
+main_ro$politics<-main_ro$politics1
+
+
+#Dummy for when the left or right control national politics
+main_ro=main_ro%>%
+  mutate(politics_gov=case_when(
+    date_day<"2012-05-06"~1,
+    date_day> "2012-05-07"~0
+  )
+    
+  )
+
 ## Creating binary variables for procedure type, submission periode, call for tenders--------------
 
 #Create dummy for procedure and submission periode
@@ -315,6 +352,21 @@ p=ggplot(meaned_main_ro,
   geom_vline(xintercept = 0,linetype=2, colour="blue")+
   theme_bw()
 ggsave(plot = p,filename = "time_from_corrupted.png",width = 10,height = 8)
+
+# Share of short submission time contracts
+contingency=main_ro%>%
+  group_by(years_apart_corrupt, submission)%>%
+  tally()%>%spread(submission,n)
+
+# Share of non open procedure contracts
+contingency=main_ro%>%
+  group_by(years_apart_corrupt, procedure)%>%
+  tally()%>%spread(procedure,n)
+
+# Share of no tender call contracts
+contingency=main_ro%>%
+  group_by(years_apart_corrupt, tendercall)%>%
+  tally()%>%spread(tendercall,n)
 
 
 ## T-test CRI unmatched 1,2,3y---------------
@@ -1036,11 +1088,41 @@ write_xlsx(main_ro_matching_final, path = "~/Downloads\\main_ro_match.xlsx")
 write_xlsx(main_ro_allcases, path = "~/Downloads\\main_ro_allcases.xlsx")
 
 ## Regressions descriptive--------------
-## Descriptive statistics of input and output variable in the regression
 
+#Matching with all DV included
+#Preparing the data frame
+main_ro_matching=main_ro%>%select(tender_id, domestic, time_from_corrupted, contractyear, contractmonth,cri_ro,tender_cpvs,log_price,buyer_buyertype,corrupt_dummy,years_apart_corrupt,buyer_nuts4,buyer_postcode2, municipality, procedure, submission, tendercall, singleb )
+
+#Cleaning 
+main_ro_matching<- data.frame(na.omit(main_ro_matching))
+main_ro_matching<-main_ro_matching %>% filter(!is.na(cri_ro))
+
+var1<-c("cri_ro","log_price")
+var2<-c("cri_ro", "procedure", "submission", "tendercall", "singleb", "tender_id", "years_apart_corrupt", "domestic", "time_from_corrupted", "contractyear", "buyer_nuts4", "municipality"  )
+
+#imbalance(group=main_ro_matching$cri_ro, data=main_ro_matching[var1])
+summary(main_ro_matching$log_price)
+#Value cuts based on quartile
+valuecuts1_0 = c(12.54,13.86,15.09)
+
+#Variable grouping
+buyer_buyerType.grp<-list(c("REGIONAL_AUTHORITY", "REGIONAL_AGENCY", "UTILITIES"),c("OTHER"), c("PUBLIC_BODY"), c("NA",NA))
+
+#Compute the coarsened exact matching
+mat1_0 <- cem(treatment = "corrupt_dummy",drop = var2, grouping = list(buyer_buyertype= buyer_buyerType.grp), cutpoints = list(log_price=valuecuts1_0), eval.imbalance = F,data = main_ro_matching)
+table(mat1_0$matched)
+
+main_ro_matching$aftermatchtreat <- mat1_0$matched
+main_ro_matching$aftermatchweight <- mat1_0$w
+
+#Filter out unmatched
+main_ro_matching_final <- main_ro_matching %>% filter(aftermatchtreat == TRUE)
+
+
+# Descriptive statistics of input and output variable in the regression UNMATCHED
 
 d.summary.extended <- main_ro %>%
-  select(cri_ro, singleb, log_price) %>%
+  select(municipality, procedure, submission, tendercall, singleb, cri_ro, log_price, domestic) %>%
   psych::describe(quant=c(.25,.75)) %>%
   as_tibble(rownames="rowname")  %>%
   print()
@@ -1051,9 +1133,18 @@ d.summary <- d.summary.extended %>%
 
 xtable(d.summary, type = "latex", file = "descriptiveregression.tex")
 
+# Descriptive statistics of input and output variable in the regression MATCHED
+d.summary.extended <- main_ro_matching_final %>%
+  select(municipality, procedure, submission, tendercall, singleb, cri_ro, log_price, domestic) %>%
+  psych::describe(quant=c(.25,.75)) %>%
+  as_tibble(rownames="rowname")  %>%
+  print()
 
+d.summary1 <- d.summary.extended %>%
+  select(var=rowname, n, mean, min, q25=Q0.25, median, q75=Q0.75, max, sd) %>%
+  print()
 
-
+xtable(d.summary1, type = "latex", file = "descriptiveregression2.tex")
 
 ## Political party overview
 
@@ -1062,3 +1153,7 @@ enforcement_ro$year <- substr(enforcement_ro$date_of_indictment, 1,4)
 contingency=enforcement_ro%>%
   group_by(year,political_party)%>%
   tally()%>%spread(political_party,n)
+
+
+
+  
